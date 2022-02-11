@@ -309,8 +309,9 @@ void Command::PrintFileNames() const {
   }
 }
 
-int Command::Execute(ArrayRef<llvm::Optional<StringRef>> Redirects,
-                     std::string *ErrMsg, bool *ExecutionFailed) const {
+llvm::sys::ProcessInfo
+Command::Execute(ArrayRef<llvm::Optional<StringRef>> Redirects,
+                 std::string *ErrMsg, bool *ExecutionFailed) const {
   PrintFileNames();
 
   SmallVector<const char *, 128> Argv;
@@ -338,7 +339,9 @@ int Command::Execute(ArrayRef<llvm::Optional<StringRef>> Redirects,
         *ExecutionFailed = true;
       // Return -1 by convention (see llvm/include/llvm/Support/Program.h) to
       // indicate the requested executable cannot be started.
-      return -1;
+      llvm::sys::ProcessInfo Res;
+      Res.ReturnCode = -1;
+      return Res;
     }
   }
 
@@ -352,9 +355,8 @@ int Command::Execute(ArrayRef<llvm::Optional<StringRef>> Redirects,
   }
 
   auto Args = llvm::toStringRefArray(Argv.data());
-  return llvm::sys::ExecuteAndWait(Executable, Args, Env, Redirects,
-                                   /*secondsToWait*/ 0, /*memoryLimit*/ 0,
-                                   ErrMsg, ExecutionFailed, &ProcStat);
+  return llvm::sys::ExecuteNoWait(Executable, Args, Env, Redirects,
+                                  /*memoryLimit*/ 0, ErrMsg, ExecutionFailed);
 }
 
 CC1Command::CC1Command(const Action &Source, const Tool &Creator,
@@ -374,41 +376,44 @@ void CC1Command::Print(raw_ostream &OS, const char *Terminator, bool Quote,
   Command::Print(OS, Terminator, Quote, CrashInfo);
 }
 
-int CC1Command::Execute(ArrayRef<llvm::Optional<StringRef>> Redirects,
+llvm::sys::ProcessInfo CC1Command::Execute(ArrayRef<llvm::Optional<StringRef>> Redirects,
                         std::string *ErrMsg, bool *ExecutionFailed) const {
   // FIXME: Currently, if there're more than one job, we disable
   // -fintegrate-cc1. If we're no longer a integrated-cc1 job, fallback to
   // out-of-process execution. See discussion in https://reviews.llvm.org/D74447
-  if (!InProcess)
-    return Command::Execute(Redirects, ErrMsg, ExecutionFailed);
+  // if (!InProcess) {
+  return Command::Execute(Redirects, ErrMsg, ExecutionFailed);
+  // }
 
-  PrintFileNames();
+  // PrintFileNames();
 
-  SmallVector<const char *, 128> Argv;
-  Argv.push_back(getExecutable());
-  Argv.append(getArguments().begin(), getArguments().end());
-  Argv.push_back(nullptr);
-  Argv.pop_back(); // The terminating null element shall not be part of the
-                   // slice (main() behavior).
+  // SmallVector<const char *, 128> Argv;
+  // Argv.push_back(getExecutable());
+  // Argv.append(getArguments().begin(), getArguments().end());
+  // Argv.push_back(nullptr);
+  // Argv.pop_back(); // The terminating null element shall not be part of the
+  //                  // slice (main() behavior).
 
-  // This flag simply indicates that the program couldn't start, which isn't
-  // applicable here.
-  if (ExecutionFailed)
-    *ExecutionFailed = false;
+  // // This flag simply indicates that the program couldn't start, which isn't
+  // // applicable here.
+  // if (ExecutionFailed)
+  //   *ExecutionFailed = false;
 
-  llvm::CrashRecoveryContext CRC;
-  CRC.DumpStackAndCleanupOnFailure = true;
+  // llvm::CrashRecoveryContext CRC;
+  // CRC.DumpStackAndCleanupOnFailure = true;
 
-  const void *PrettyState = llvm::SavePrettyStackState();
-  const Driver &D = getCreator().getToolChain().getDriver();
+  // const void *PrettyState = llvm::SavePrettyStackState();
+  // const Driver &D = getCreator().getToolChain().getDriver();
 
-  int R = 0;
-  // Enter ExecuteCC1Tool() instead of starting up a new process
-  if (!CRC.RunSafely([&]() { R = D.CC1Main(Argv); })) {
-    llvm::RestorePrettyStackState(PrettyState);
-    return CRC.RetCode;
-  }
-  return R;
+  // int R = 0;
+  // // Enter ExecuteCC1Tool() instead of starting up a new process
+  // if (!CRC.RunSafely([&]() { R = D.CC1Main(Argv); })) {
+  //   llvm::RestorePrettyStackState(PrettyState);
+  //   llvm::sys::ProcessInfo Res;
+  //   Res.ReturnCode = CRC.RetCode;
+  //   return Res;
+  // }
+  // return llvm::sys::ProcessInfo();
 }
 
 void CC1Command::setEnvironment(llvm::ArrayRef<const char *> NewEnvironment) {
@@ -431,14 +436,14 @@ void ForceSuccessCommand::Print(raw_ostream &OS, const char *Terminator,
   OS << " || (exit 0)" << Terminator;
 }
 
-int ForceSuccessCommand::Execute(ArrayRef<llvm::Optional<StringRef>> Redirects,
-                                 std::string *ErrMsg,
-                                 bool *ExecutionFailed) const {
-  int Status = Command::Execute(Redirects, ErrMsg, ExecutionFailed);
-  (void)Status;
-  if (ExecutionFailed)
-    *ExecutionFailed = false;
-  return 0;
+llvm::sys::ProcessInfo
+ForceSuccessCommand::Execute(ArrayRef<llvm::Optional<StringRef>> Redirects,
+                             std::string *ErrMsg, bool *ExecutionFailed) const {
+  return Command::Execute(Redirects, ErrMsg, ExecutionFailed);
+  // (void)Status;
+  // if (ExecutionFailed)
+  //   *ExecutionFailed = false;
+  // return 0;
 }
 
 void JobList::Print(raw_ostream &OS, const char *Terminator, bool Quote,

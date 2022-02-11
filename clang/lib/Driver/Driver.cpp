@@ -89,6 +89,7 @@
 #include "llvm/Support/Process.h"
 #include "llvm/Support/Program.h"
 #include "llvm/Support/StringSaver.h"
+#include "llvm/Support/Threading.h"
 #include "llvm/Support/VirtualFileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 #include <map>
@@ -3702,6 +3703,13 @@ void Driver::handleArguments(Compilation &C, DerivedArgList &Args,
     Args.eraseArg(options::OPT__SLASH_Yc);
     Args.eraseArg(options::OPT__SLASH_Yu);
     YcArg = YuArg = nullptr;
+  }
+
+  if (FinalPhase != phases::Preprocess) {
+    if (Arg *A = Args.getLastArg(options::OPT__SLASH_MP)) {
+      C.CoresToUse = llvm::optimal_concurrency().compute_thread_count();
+      StringRef(A->getValue()).getAsInteger(10, C.CoresToUse);
+    }
   }
 
   unsigned LastPLSize = 0;

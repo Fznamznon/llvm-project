@@ -161,7 +161,7 @@ bool Compilation::CleanupFileMap(const ArgStringMap &Files,
   return Success;
 }
 
-int Compilation::ExecuteCommand(const Command &C,
+llvm::sys::ProcessInfo Compilation::ExecuteCommandAsync(const Command &C,
                                 const Command *&FailingCommand) const {
   if ((getDriver().CCPrintOptions ||
        getArgs().hasArg(options::OPT_v)) && !getDriver().CCGenDiagnostics) {
@@ -180,7 +180,9 @@ int Compilation::ExecuteCommand(const Command &C,
         getDriver().Diag(diag::err_drv_cc_print_options_failure)
             << EC.message();
         FailingCommand = &C;
-        return 1;
+        llvm::sys::ProcessInfo Res;
+        Res.ReturnCode = 1;
+        return Res;
       }
       OS = OwnedStream.get();
     }
@@ -193,18 +195,40 @@ int Compilation::ExecuteCommand(const Command &C,
 
   std::string Error;
   bool ExecutionFailed;
-  int Res = C.Execute(Redirects, &Error, &ExecutionFailed);
+  return C.Execute(Redirects, &Error, &ExecutionFailed);
+  // TODO Move the stuff where we wait
+  // if (PostCallback)
+  //   PostCallback(C, Res);
+  // if (!Error.empty()) {
+  //   assert(Res && "Error string set with 0 result code!");
+  //   getDriver().Diag(diag::err_drv_command_failure) << Error;
+  // }
+
+  // if (Res)
+  //   FailingCommand = &C;
+
+  // return ExecutionFailed ? 1 : Res;
+}
+
+int Compilation::ExecuteCommand(const Command &C,
+                                const Command *&FailingCommand) const {
+  llvm::sys::ProcessInfo RunRes = ExecuteCommandAsync(C, FailingCommand);
+  std::string ErrMsg;
+  llvm::sys::ProcessInfo WaitRes = llvm::sys::Wait(
+      RunRes, /*SecondsToWait=*/0, /*WaitUntilTerminates=*/true, &ErrMsg);
+
+  int ReturnCode = WaitRes.ReturnCode;
   if (PostCallback)
-    PostCallback(C, Res);
-  if (!Error.empty()) {
-    assert(Res && "Error string set with 0 result code!");
-    getDriver().Diag(diag::err_drv_command_failure) << Error;
+    PostCallback(C, ReturnCode);
+
+  if (!ErrMsg.empty()) {
+    assert(ReturnCode && "Error string set with 0 result code!");
+    getDriver().Diag(diag::err_drv_command_failure) << ErrMsg;
   }
 
-  if (Res)
+  if (WaitRes.ReturnCode != 0)
     FailingCommand = &C;
-
-  return ExecutionFailed ? 1 : Res;
+  return WaitRes.ReturnCode;
 }
 
 using FailingCommandList = SmallVectorImpl<std::pair<int, const Command *>>;
@@ -236,17 +260,97 @@ static bool InputsOk(const Command &C,
   return !ActionFailed(&C.getSource(), FailingCommands);
 }
 
+int Compilation::waitForJobsToComplete(
+    SmallVectorImpl<std::pair<llvm::sys::ProcessInfo, const Command *>>
+        &JobsSubmitted,
+    FailingCommandList &FailingCommands, bool BlockingWait) const {
+  // The loop mutates the container, so call end() each time.
+  std::string ErrMsg;
+  auto It = JobsSubmitted.begin();
+  while (It != JobsSubmitted.end()) {
+    llvm::sys::ProcessInfo WaitResult = llvm::sys::Wait(
+        (*It).first, /*SecondsToWait=*/0, BlockingWait, &ErrMsg);
+
+    // Check if the job has finished (PID will be 0 if it's not).
+    if (!BlockingWait && !WaitResult.Pid) {
+      It++;
+      continue;
+    }
+    It = JobsSubmitted.erase(It);
+
+    if (PostCallback)
+      PostCallback(*(*It).second, WaitResult.ReturnCode);
+    if (!ErrMsg.empty()) {
+      assert(WaitResult.ReturnCode && "Error string set with 0 result code!");
+      getDriver().Diag(diag::err_drv_command_failure) << ErrMsg;
+    }
+
+    if (WaitResult.ReturnCode != 0) {
+      FailingCommands.push_back(
+          std::make_pair(WaitResult.ReturnCode, (*It).second));
+      return WaitResult.ReturnCode;
+    }
+  }
+  return 0;
+}
+
 void Compilation::ExecuteJobs(const JobList &Jobs,
                               FailingCommandList &FailingCommands) const {
+  // unsigned NumberOfProcessesToUse =
+  //     llvm::optimal_concurrency().compute_thread_count();
+  // std::cout << NumberOfProcessesToUse << std::endl;
+  SmallVector<std::pair<llvm::sys::ProcessInfo, const Command *>, 8>
+      JobsSubmitted;
+  // std::cout << Jobs.size() << std::endl;
+
+  SmallVector<const Command *> CC1Commands;
+  SmallVector<const Command *> NonCC1Commands;
+  auto IsCC1Command = [](const Command &Cmd) {
+    return StringRef(Cmd.getExecutable()).endswith("clang-cl.exe");
+  };
+  for (const auto &Job : Jobs) {
+    if (IsCC1Command(Job))
+      CC1Commands.push_back(&Job);
+    else
+      NonCC1Commands.push_back(&Job);
+  }
+
   // According to UNIX standard, driver need to continue compiling all the
   // inputs on the command line even one of them failed.
   // In all but CLMode, execute all the jobs unless the necessary inputs for the
   // job is missing due to previous failures.
-  for (const auto &Job : Jobs) {
-    if (!InputsOk(Job, FailingCommands))
+  for (const auto &Job : CC1Commands) {
+    if (!InputsOk(*Job, FailingCommands))
       continue;
     const Command *FailingCommand = nullptr;
-    if (int Res = ExecuteCommand(Job, FailingCommand)) {
+
+    while (JobsSubmitted.size() == CoresToUse) {
+      // Bail as soon as one command fails in cl driver mode.
+      if (int Res = waitForJobsToComplete(JobsSubmitted, FailingCommands,
+                                          /*BlockingWait=*/false) &&
+                    TheDriver.IsCLMode()) {
+        // Somehow terminate all jobs
+      }
+    }
+
+    JobsSubmitted.push_back(
+        std::make_pair(ExecuteCommandAsync(*Job, FailingCommand), FailingCommand));
+  }
+  // Wait for all commands to be executed.
+  while (!JobsSubmitted.empty()) {
+    // Bail as soon as one command fails in cl driver mode.
+    if (int Res = waitForJobsToComplete(JobsSubmitted, FailingCommands,
+                                        /*BlockingWait=*/true) &&
+                  TheDriver.IsCLMode()) {
+      // Somehow terminate all jobs
+    }
+  }
+
+  for (const auto &Job : NonCC1Commands) {
+    if (!InputsOk(*Job, FailingCommands))
+      continue;
+    const Command *FailingCommand = nullptr;
+    if (int Res = ExecuteCommand(*Job, FailingCommand)) {
       FailingCommands.push_back(std::make_pair(Res, FailingCommand));
       // Bail as soon as one command fails in cl driver mode.
       if (TheDriver.IsCLMode())

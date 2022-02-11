@@ -130,6 +130,8 @@ class Compilation {
   bool ForceKeepTempFiles = false;
 
 public:
+  /// Number of processors/cores to use for compiling the jobs
+  unsigned CoresToUse = 1;
   Compilation(const Driver &D, const ToolChain &DefaultToolChain,
               llvm::opt::InputArgList *Args,
               llvm::opt::DerivedArgList *TranslatedArgs, bool ContainsError);
@@ -284,7 +286,21 @@ public:
                       const JobAction *JA,
                       bool IssueErrors = false) const;
 
-  /// ExecuteCommand - Execute an actual command.
+  using FailingCommandList = SmallVectorImpl<std::pair<int, const Command *>>;
+  int waitForJobsToComplete(
+      SmallVectorImpl<std::pair<llvm::sys::ProcessInfo, const Command *>>
+          &JobsSubmitted,
+      FailingCommandList &FailingCommands, bool BlockingWait) const;
+
+  /// ExecuteCommandAsync - Execute an actual command in a separate process.
+  ///
+  /// \param FailingCommand - For non-zero results, this will be set to the
+  /// Command which failed, if any.
+  /// \return The result code of the subprocess.
+  llvm::sys::ProcessInfo ExecuteCommandAsync(const Command &C,
+                          const Command *&FailingCommand) const;
+
+  /// ExecuteCommandAsync - Execute an actual command.
   ///
   /// \param FailingCommand - For non-zero results, this will be set to the
   /// Command which failed, if any.
