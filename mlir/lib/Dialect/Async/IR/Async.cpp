@@ -50,7 +50,6 @@ LogicalResult YieldOp::verify() {
 
 MutableOperandRange
 YieldOp::getMutableSuccessorOperands(Optional<unsigned> index) {
-  assert(!index.hasValue());
   return operandsMutable();
 }
 
@@ -63,6 +62,15 @@ constexpr char kOperandSegmentSizesAttr[] = "operand_segment_sizes";
 OperandRange ExecuteOp::getSuccessorEntryOperands(unsigned index) {
   assert(index == 0 && "invalid region index");
   return operands();
+}
+
+bool ExecuteOp::areTypesCompatible(Type lhs, Type rhs) {
+  const auto getValueOrTokenType = [](Type type) {
+    if (auto value = type.dyn_cast<ValueType>())
+      return value.getValueType();
+    return type;
+  };
+  return getValueOrTokenType(lhs) == getValueOrTokenType(rhs);
 }
 
 void ExecuteOp::getSuccessorRegions(Optional<unsigned> index,
@@ -125,16 +133,16 @@ void ExecuteOp::build(OpBuilder &builder, OperationState &result,
   }
 }
 
-static void print(OpAsmPrinter &p, ExecuteOp op) {
+void ExecuteOp::print(OpAsmPrinter &p) {
   // [%tokens,...]
-  if (!op.dependencies().empty())
-    p << " [" << op.dependencies() << "]";
+  if (!dependencies().empty())
+    p << " [" << dependencies() << "]";
 
   // (%value as %unwrapped: !async.value<!arg.type>, ...)
-  if (!op.operands().empty()) {
+  if (!operands().empty()) {
     p << " (";
-    Block *entry = op.body().empty() ? nullptr : &op.body().front();
-    llvm::interleaveComma(op.operands(), p, [&, n = 0](Value operand) mutable {
+    Block *entry = body().empty() ? nullptr : &body().front();
+    llvm::interleaveComma(operands(), p, [&, n = 0](Value operand) mutable {
       Value argument = entry ? entry->getArgument(n++) : Value();
       p << operand << " as " << argument << ": " << operand.getType();
     });
@@ -142,14 +150,14 @@ static void print(OpAsmPrinter &p, ExecuteOp op) {
   }
 
   // -> (!async.value<!return.type>, ...)
-  p.printOptionalArrowTypeList(llvm::drop_begin(op.getResultTypes()));
-  p.printOptionalAttrDictWithKeyword(op->getAttrs(),
+  p.printOptionalArrowTypeList(llvm::drop_begin(getResultTypes()));
+  p.printOptionalAttrDictWithKeyword((*this)->getAttrs(),
                                      {kOperandSegmentSizesAttr});
   p << ' ';
-  p.printRegion(op.body(), /*printEntryBlockArgs=*/false);
+  p.printRegion(body(), /*printEntryBlockArgs=*/false);
 }
 
-static ParseResult parseExecuteOp(OpAsmParser &parser, OperationState &result) {
+ParseResult ExecuteOp::parse(OpAsmParser &parser, OperationState &result) {
   MLIRContext *ctx = result.getContext();
 
   // Sizes of parsed variadic operands, will be updated below after parsing.
@@ -159,7 +167,7 @@ static ParseResult parseExecuteOp(OpAsmParser &parser, OperationState &result) {
 
   // Parse dependency tokens.
   if (succeeded(parser.parseOptionalLSquare())) {
-    SmallVector<OpAsmParser::OperandType, 4> tokenArgs;
+    SmallVector<OpAsmParser::UnresolvedOperand, 4> tokenArgs;
     if (parser.parseOperandList(tokenArgs) ||
         parser.resolveOperands(tokenArgs, tokenTy, result.operands) ||
         parser.parseRSquare())
@@ -169,8 +177,8 @@ static ParseResult parseExecuteOp(OpAsmParser &parser, OperationState &result) {
   }
 
   // Parse async value operands (%value as %unwrapped : !async.value<!type>).
-  SmallVector<OpAsmParser::OperandType, 4> valueArgs;
-  SmallVector<OpAsmParser::OperandType, 4> unwrappedArgs;
+  SmallVector<OpAsmParser::UnresolvedOperand, 4> valueArgs;
+  SmallVector<OpAsmParser::UnresolvedOperand, 4> unwrappedArgs;
   SmallVector<Type, 4> valueTypes;
   SmallVector<Type, 4> unwrappedTypes;
 
@@ -228,7 +236,7 @@ static ParseResult parseExecuteOp(OpAsmParser &parser, OperationState &result) {
   return success();
 }
 
-LogicalResult ExecuteOp::verify() {
+LogicalResult ExecuteOp::verifyRegions() {
   // Unwrap async.execute value operands types.
   auto unwrappedTypes = llvm::map_range(operands(), [](Value operand) {
     return operand.getType().cast<ValueType>().getValueType();

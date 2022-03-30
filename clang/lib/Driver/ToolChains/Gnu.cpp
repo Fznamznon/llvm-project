@@ -1867,6 +1867,10 @@ static llvm::StringRef getGCCToolchainDir(const ArgList &Args,
   if (A)
     return A->getValue();
 
+  if (const Arg *X = Args.getLastArg(
+          clang::driver::options::OPT__overlay_platform_toolchain_EQ))
+    return X->getValue();
+
   // If we have a SysRoot, ignore GCC_INSTALL_PREFIX.
   // GCC_INSTALL_PREFIX specifies the gcc installation for the default
   // sysroot and is likely not valid with a different sysroot.
@@ -2803,6 +2807,11 @@ void Generic_GCC::AddMultilibPaths(const Driver &D,
         D, GCCInstallation.getInstallPath() + SelectedMultilib.gccSuffix(),
         Paths);
 
+    // Add lib/gcc/$triple/$libdir
+    // For GCC built with --enable-version-specific-runtime-libs.
+    addPathIfExists(D, GCCInstallation.getInstallPath() + "/../" + OSLibDir,
+                    Paths);
+
     // GCC cross compiling toolchains will install target libraries which ship
     // as part of the toolchain under <prefix>/<triple>/<libdir> rather than as
     // any part of the GCC installation in
@@ -2979,6 +2988,15 @@ bool Generic_GCC::addGCCLibStdCxxIncludePaths(
   if (addLibStdCXXIncludePaths(
           LibDir.str() + "/../" + TripleStr + "/include/c++/" + Version.Text,
           TripleStr, Multilib.includeSuffix(), DriverArgs, CC1Args))
+    return true;
+
+  // Try /gcc/$triple/$version/include/c++/ (gcc --print-multiarch is not
+  // empty). Like above but for GCC built with
+  // --enable-version-specific-runtime-libs.
+  if (addLibStdCXXIncludePaths(LibDir.str() + "/gcc/" + TripleStr + "/" +
+                                   Version.Text + "/include/c++/",
+                               TripleStr, Multilib.includeSuffix(), DriverArgs,
+                               CC1Args))
     return true;
 
   // Detect Debian g++-multiarch-incdir.diff.

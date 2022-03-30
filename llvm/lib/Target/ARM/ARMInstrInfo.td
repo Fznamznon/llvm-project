@@ -5129,6 +5129,7 @@ let hasNoSchedulingInfo = 1 in
 def TSB : AInoP<(outs), (ins tsb_opt:$opt), MiscFrm, NoItinerary,
                 "tsb", "\t$opt", []>, Requires<[IsARM, HasV8_4a]> {
   let Inst{31-0} = 0xe320f012;
+  let DecoderMethod = "DecodeTSBInstruction";
 }
 
 }
@@ -6387,7 +6388,7 @@ def : ARMInstAlias<"neg${s}${p} $Rd, $Rm",
                    (RSBri GPR:$Rd, GPR:$Rm, 0, pred:$p, cc_out:$s)>;
 
 // Pre-v6, 'mov r0, r0' was used as a NOP encoding.
-def : InstAlias<"nop${p}", (MOVr R0, R0, pred:$p, zero_reg)>,
+def : InstAlias<"nop${p}", (MOVr R0, R0, pred:$p, zero_reg), 0>,
          Requires<[IsARM, NoV6]>;
 
 // MUL/UMLAL/SMLAL/UMULL/SMULL are available on all arches, but
@@ -6415,8 +6416,7 @@ def : InstAlias<"umull${s}${p} $RdLo, $RdHi, $Rn, $Rm",
 
 // 'it' blocks in ARM mode just validate the predicates. The IT itself
 // is discarded.
-def ITasm : ARMAsmPseudo<"it$mask $cc", (ins it_pred:$cc, it_mask:$mask)>,
-         ComplexDeprecationPredicate<"IT">;
+def ITasm : ARMAsmPseudo<"it$mask $cc", (ins it_pred:$cc, it_mask:$mask)>;
 
 let mayLoad = 1, mayStore =1, hasSideEffects = 1, hasNoSchedulingInfo = 1 in
 def SPACE : PseudoInst<(outs GPR:$Rd), (ins i32imm:$size, GPR:$Rn),

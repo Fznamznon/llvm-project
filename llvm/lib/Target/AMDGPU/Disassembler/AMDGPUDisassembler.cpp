@@ -21,12 +21,15 @@
 #include "TargetInfo/AMDGPUTargetInfo.h"
 #include "Utils/AMDGPUBaseInfo.h"
 #include "llvm-c/DisassemblerTypes.h"
+#include "llvm/BinaryFormat/ELF.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCFixedLenDisassembler.h"
-#include "llvm/MC/TargetRegistry.h"
 #include "llvm/MC/MCInstrDesc.h"
+#include "llvm/MC/MCRegisterInfo.h"
+#include "llvm/MC/MCSubtargetInfo.h"
+#include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/AMDHSAKernelDescriptor.h"
 
 using namespace llvm;
@@ -144,6 +147,8 @@ DECODE_OPERAND_REG(AReg_512)
 DECODE_OPERAND_REG(AReg_1024)
 DECODE_OPERAND_REG(AV_32)
 DECODE_OPERAND_REG(AV_64)
+DECODE_OPERAND_REG(AV_128)
+DECODE_OPERAND_REG(AV_512)
 
 static DecodeStatus decodeOperand_VSrc16(MCInst &Inst,
                                          unsigned Imm,
@@ -380,14 +385,6 @@ static DecodeStatus decodeOperand_SReg_32(MCInst &Inst,
                                           const void *Decoder) {
   auto DAsm = static_cast<const AMDGPUDisassembler*>(Decoder);
   return addOperand(Inst, DAsm->decodeOperand_SReg_32(Imm));
-}
-
-static DecodeStatus decodeOperand_VGPR_32(MCInst &Inst,
-                                         unsigned Imm,
-                                         uint64_t Addr,
-                                         const void *Decoder) {
-  auto DAsm = static_cast<const AMDGPUDisassembler*>(Decoder);
-  return addOperand(Inst, DAsm->decodeSrcOp(AMDGPUDisassembler::OPW32, Imm));
 }
 
 #define DECODE_SDWA(DecName) \
@@ -999,6 +996,14 @@ MCOperand AMDGPUDisassembler::decodeOperand_AV_32(unsigned Val) const {
 
 MCOperand AMDGPUDisassembler::decodeOperand_AV_64(unsigned Val) const {
   return decodeSrcOp(OPW64, Val);
+}
+
+MCOperand AMDGPUDisassembler::decodeOperand_AV_128(unsigned Val) const {
+  return decodeSrcOp(OPW128, Val);
+}
+
+MCOperand AMDGPUDisassembler::decodeOperand_AV_512(unsigned Val) const {
+  return decodeSrcOp(OPW512, Val);
 }
 
 MCOperand AMDGPUDisassembler::decodeOperand_VReg_64(unsigned Val) const {

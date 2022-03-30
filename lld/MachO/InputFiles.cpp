@@ -252,14 +252,36 @@ InputFile::InputFile(Kind kind, const InterfaceFile &interface)
 // Note that "record" is a term I came up with. In contrast, "literal" is a term
 // used by the Mach-O format.
 static Optional<size_t> getRecordSize(StringRef segname, StringRef name) {
-  if (name == section_names::cfString) {
-    if (config->icfLevel != ICFLevel::none && segname == segment_names::data)
-      return target->wordSize == 8 ? 32 : 16;
-  } else if (name == section_names::compactUnwind) {
-    if (segname == segment_names::ld)
-      return target->wordSize == 8 ? 32 : 20;
+  if (name == section_names::compactUnwind) {
+      if (segname == segment_names::ld)
+        return target->wordSize == 8 ? 32 : 20;
   }
+  if (config->icfLevel == ICFLevel::none)
+    return {};
+
+  if (name == section_names::cfString && segname == segment_names::data)
+    return target->wordSize == 8 ? 32 : 16;
+  if (name == section_names::objcClassRefs && segname == segment_names::data)
+    return target->wordSize;
   return {};
+}
+
+static Error parseCallGraph(ArrayRef<uint8_t> data,
+                            std::vector<CallGraphEntry> &callGraph) {
+  TimeTraceScope timeScope("Parsing call graph section");
+  BinaryStreamReader reader(data, support::little);
+  while (!reader.empty()) {
+    uint32_t fromIndex, toIndex;
+    uint64_t count;
+    if (Error err = reader.readInteger(fromIndex))
+      return err;
+    if (Error err = reader.readInteger(toIndex))
+      return err;
+    if (Error err = reader.readInteger(count))
+      return err;
+    callGraph.emplace_back(fromIndex, toIndex, count);
+  }
+  return Error::success();
 }
 
 // Parse the sequence of sections within a single LC_SEGMENT(_64).
@@ -320,25 +342,8 @@ void ObjFile::parseSections(ArrayRef<SectionHeader> sectionHeaders) {
       if (name == section_names::compactUnwind)
         compactUnwindSection = sections.back();
     } else if (segname == segment_names::llvm) {
-      if (name == "__cg_profile" && config->callGraphProfileSort) {
-        TimeTraceScope timeScope("Parsing call graph section");
-        BinaryStreamReader reader(data, support::little);
-        while (!reader.empty()) {
-          uint32_t fromIndex, toIndex;
-          uint64_t count;
-          if (Error err = reader.readInteger(fromIndex))
-            fatal(toString(this) + ": Expected 32-bit integer");
-          if (Error err = reader.readInteger(toIndex))
-            fatal(toString(this) + ": Expected 32-bit integer");
-          if (Error err = reader.readInteger(count))
-            fatal(toString(this) + ": Expected 64-bit integer");
-          callGraph.emplace_back();
-          CallGraphEntry &entry = callGraph.back();
-          entry.fromIndex = fromIndex;
-          entry.toIndex = toIndex;
-          entry.count = count;
-        }
-      }
+      if (config->callGraphProfileSort && name == section_names::cgProfile)
+        checkError(parseCallGraph(data, callGraph));
       // ld64 does not appear to emit contents from sections within the __LLVM
       // segment. Symbols within those sections point to bitcode metadata
       // instead of actual symbols. Global symbols within those sections could
@@ -368,13 +373,13 @@ void ObjFile::parseSections(ArrayRef<SectionHeader> sectionHeaders) {
 // same location as an offset relative to the start of the containing
 // subsection.
 template <class T>
-static InputSection *findContainingSubsection(const Subsections &subsections,
+static InputSection *findContainingSubsection(const Section &section,
                                               T *offset) {
   static_assert(std::is_same<uint64_t, T>::value ||
                     std::is_same<uint32_t, T>::value,
                 "unexpected type for offset");
   auto it = std::prev(llvm::upper_bound(
-      subsections, *offset,
+      section.subsections, *offset,
       [](uint64_t value, Subsection subsec) { return value < subsec.offset; }));
   *offset -= it->offset;
   return it->isec;
@@ -415,11 +420,12 @@ static bool validateRelocationInfo(InputFile *file, const SectionHeader &sec,
 template <class SectionHeader>
 void ObjFile::parseRelocations(ArrayRef<SectionHeader> sectionHeaders,
                                const SectionHeader &sec,
-                               Subsections &subsections) {
+                               Section &section) {
   auto *buf = reinterpret_cast<const uint8_t *>(mb.getBufferStart());
   ArrayRef<relocation_info> relInfos(
       reinterpret_cast<const relocation_info *>(buf + sec.reloff), sec.nreloc);
 
+  Subsections &subsections = section.subsections;
   auto subsecIt = subsections.rbegin();
   for (size_t i = 0; i < relInfos.size(); i++) {
     // Paired relocations serve as Mach-O's method for attaching a
@@ -498,10 +504,8 @@ void ObjFile::parseRelocations(ArrayRef<SectionHeader> sectionHeaders,
         // The addend for a non-pcrel relocation is its absolute address.
         referentOffset = totalAddend - referentSecHead.addr;
       }
-      Subsections &referentSubsections =
-          sections[relInfo.r_symbolnum - 1]->subsections;
-      r.referent =
-          findContainingSubsection(referentSubsections, &referentOffset);
+      r.referent = findContainingSubsection(*sections[relInfo.r_symbolnum - 1],
+                                            &referentOffset);
       r.addend = referentOffset;
     }
 
@@ -515,7 +519,7 @@ void ObjFile::parseRelocations(ArrayRef<SectionHeader> sectionHeaders,
       ++subsecIt;
     if (subsecIt == subsections.rend() ||
         subsecIt->offset + subsecIt->isec->getSize() <= r.offset) {
-      subsec = findContainingSubsection(subsections, &r.offset);
+      subsec = findContainingSubsection(section, &r.offset);
       // Now that we know the relocs are unsorted, avoid trying the 'fast path'
       // for the other relocations.
       subsecIt = subsections.rend();
@@ -539,10 +543,8 @@ void ObjFile::parseRelocations(ArrayRef<SectionHeader> sectionHeaders,
       } else {
         uint64_t referentOffset =
             totalAddend - sectionHeaders[minuendInfo.r_symbolnum - 1].addr;
-        Subsections &referentSubsectVec =
-            sections[minuendInfo.r_symbolnum - 1]->subsections;
-        p.referent =
-            findContainingSubsection(referentSubsectVec, &referentOffset);
+        p.referent = findContainingSubsection(
+            *sections[minuendInfo.r_symbolnum - 1], &referentOffset);
         p.addend = referentOffset;
       }
       subsec->relocs.push_back(p);
@@ -729,7 +731,7 @@ void ObjFile::parseSymbols(ArrayRef<typename LP::section> sectionHeaders,
         StringRef name = strtab + sym.n_strx;
         uint64_t symbolOffset = sym.n_value - sectionAddr;
         InputSection *isec =
-            findContainingSubsection(subsections, &symbolOffset);
+            findContainingSubsection(*sections[i], &symbolOffset);
         if (symbolOffset != 0) {
           error(toString(lastIsec) + ":  symbol " + name +
                 " at misaligned offset");
@@ -893,8 +895,7 @@ template <class LP> void ObjFile::parse() {
   // parsed all the symbols.
   for (size_t i = 0, n = sections.size(); i < n; ++i)
     if (!sections[i]->subsections.empty())
-      parseRelocations(sectionHeaders, sectionHeaders[i],
-                       sections[i]->subsections);
+      parseRelocations(sectionHeaders, sectionHeaders[i], *sections[i]);
 
   parseDebugInfo();
   if (compactUnwindSection)
@@ -996,8 +997,8 @@ void ObjFile::registerCompactUnwind() {
             cast<ConcatInputSection>(r.referent.dyn_cast<InputSection *>());
       }
       if (referentIsec->getSegName() != segment_names::text)
-        error("compact unwind references address in " + toString(referentIsec) +
-              " which is not in segment __TEXT");
+        error(isec->getLocation(r.offset) + " references section " +
+              referentIsec->getName() + " which is not in segment __TEXT");
       // The functionAddress relocations are typically section relocations.
       // However, unwind info operates on a per-symbol basis, so we search for
       // the function symbol here.
@@ -1558,6 +1559,7 @@ static macho::Symbol *createBitcodeSymbol(const lto::InputFile::Symbol &objSym,
   case GlobalValue::DefaultVisibility:
     break;
   }
+  isPrivateExtern = isPrivateExtern || objSym.canBeOmittedFromSymbolTable();
 
   if (objSym.isCommon())
     return symtab->addCommon(name, &file, objSym.getCommonSize(),

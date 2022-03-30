@@ -99,11 +99,34 @@ Improvements to clang-tidy
 New checks
 ^^^^^^^^^^
 
+- New :doc:`bugprone-shared-ptr-array-mismatch <clang-tidy/checks/bugprone-shared-ptr-array-mismatch>` check.
+
+  Finds initializations of C++ shared pointers to non-array type that are initialized with an array.
+
+- New :doc:`modernize-macro-to-enum
+  <clang-tidy/checks/modernize-macro-to-enum>` check.
+
+  Replaces groups of adjacent macros with an unscoped anonymous enum.
+
 New check aliases
 ^^^^^^^^^^^^^^^^^
 
+- New alias :doc:`cppcoreguidelines-macro-to-enum
+  <clang-tidy/checks/cppcoreguidelines-macro-to-enum>` to :doc:`modernize-macro-to-enum
+  <clang-tidy/checks/modernize-macro-to-enum>` was added.
+
 Changes in existing checks
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+- Fixed a false positive in :doc:`readability-non-const-parameter
+  <clang-tidy/checks/readability-non-const-parameter>` when the parameter is referenced by an lvalue
+
+- Fixed a crash in :doc:`readability-const-return-type
+  <clang-tidy/checks/readability-const-return-type>` when a pure virtual function
+  overrided has a const return type. Removed the fix for a virtual function.
+
+- Fixed a false positive in :doc:`misc-redundant-expression <clang-tidy/checks/misc-redundant-expression>`
+  involving overloaded comparison operators.
 
 Removed checks
 ^^^^^^^^^^^^^^

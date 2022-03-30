@@ -835,13 +835,13 @@ void RecognizableInstr::emitDecodePath(DisassemblerTables &tables) const {
   if (Form == X86Local::AddRegFrm || Form == X86Local::MRMSrcRegCC ||
       Form == X86Local::MRMSrcMemCC || Form == X86Local::MRMXrCC ||
       Form == X86Local::MRMXmCC || Form == X86Local::AddCCFrm) {
-    unsigned Count = Form == X86Local::AddRegFrm ? 8 : 16;
+    uint8_t Count = Form == X86Local::AddRegFrm ? 8 : 16;
     assert(((opcodeToSet % Count) == 0) && "ADDREG_FRM opcode not aligned");
 
     uint8_t currentOpcode;
 
-    for (currentOpcode = opcodeToSet; currentOpcode < opcodeToSet + Count;
-         ++currentOpcode)
+    for (currentOpcode = opcodeToSet;
+         currentOpcode < (uint8_t)(opcodeToSet + Count); ++currentOpcode)
       tables.setTableFields(*opcodeType, insnContext(), currentOpcode, *filter,
                             UID, Is32Bit, OpPrefix == 0,
                             IgnoresVEX_L || EncodeRC,

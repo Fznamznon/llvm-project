@@ -73,12 +73,6 @@ class Arith_CastOp<string mnemonic, TypeConstraint From, TypeConstraint To,
     DeclareOpInterfaceMethods<CastOpInterface>]>,
     Arguments<(ins From:$in)>,
     Results<(outs To:$out)> {
-  let builders = [
-    OpBuilder<(ins "Value":$source, "Type":$destType), [{
-      impl::buildCastOp($_builder, $_state, source, destType);
-    }]>
-  ];
-
   let assemblyFormat = "$in attr-dict `:` type($in) `to` type($out)";
 }
 
@@ -516,6 +510,7 @@ def Arith_ShLIOp : Arith_IntBinaryOp<"shli"> {
     %3 = arith.shli %1, %2 : (i8, i8) -> i8    // %3 is 0b00101000
     ```
   }];
+  let hasFolder = 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -537,6 +532,7 @@ def Arith_ShRUIOp : Arith_IntBinaryOp<"shrui"> {
     %3 = arith.shrui %1, %2 : (i8, i8) -> i8   // %3 is 0b00010100
     ```
   }];
+  let hasFolder = 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -561,6 +557,7 @@ def Arith_ShRSIOp : Arith_IntBinaryOp<"shrsi"> {
     %5 = arith.shrsi %4, %2 : (i8, i8) -> i8   // %5 is 0b00001100
     ```
   }];
+  let hasFolder = 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -682,7 +679,7 @@ def Arith_MaxFOp : Arith_FloatBinaryOp<"maxf", [Commutative]> {
 // MaxSIOp
 //===----------------------------------------------------------------------===//
 
-def Arith_MaxSIOp : Arith_IntBinaryOp<"maxsi"> {
+def Arith_MaxSIOp : Arith_IntBinaryOp<"maxsi", [Commutative]> {
   let summary = "signed integer maximum operation";
   let hasFolder = 1;
 }
@@ -691,7 +688,7 @@ def Arith_MaxSIOp : Arith_IntBinaryOp<"maxsi"> {
 // MaxUIOp
 //===----------------------------------------------------------------------===//
 
-def Arith_MaxUIOp : Arith_IntBinaryOp<"maxui"> {
+def Arith_MaxUIOp : Arith_IntBinaryOp<"maxui", [Commutative]> {
   let summary = "unsigned integer maximum operation";
   let hasFolder = 1;
 }
@@ -726,7 +723,7 @@ def Arith_MinFOp : Arith_FloatBinaryOp<"minf", [Commutative]> {
 // MinSIOp
 //===----------------------------------------------------------------------===//
 
-def Arith_MinSIOp : Arith_IntBinaryOp<"minsi"> {
+def Arith_MinSIOp : Arith_IntBinaryOp<"minsi", [Commutative]> {
   let summary = "signed integer minimum operation";
   let hasFolder = 1;
 }
@@ -735,7 +732,7 @@ def Arith_MinSIOp : Arith_IntBinaryOp<"minsi"> {
 // MinUIOp
 //===----------------------------------------------------------------------===//
 
-def Arith_MinUIOp : Arith_IntBinaryOp<"minui"> {
+def Arith_MinUIOp : Arith_IntBinaryOp<"minui", [Commutative]> {
   let summary = "unsigned integer minimum operation";
   let hasFolder = 1;
 }
@@ -1109,6 +1106,7 @@ def Arith_CmpIOp : Arith_CompareOpOfAnyRank<"cmpi"> {
   }];
 
   let hasFolder = 1;
+  let hasCanonicalizer = 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -1159,6 +1157,7 @@ def Arith_CmpFOp : Arith_CompareOp<"cmpf"> {
   }];
 
   let hasFolder = 1;
+  let hasCanonicalizer = 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -1208,8 +1207,7 @@ def SelectOp : Arith_Op<"select", [
   let hasVerifier = 1;
   
   // FIXME: Switch this to use the declarative assembly format.
-  let printer = [{ return ::print(p, *this); }];
-  let parser = [{ return ::parse$cppClass(parser, result); }];
+  let hasCustomAssemblyFormat = 1;
 }
 
 #endif // ARITHMETIC_OPS

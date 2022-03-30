@@ -403,7 +403,7 @@ endif ()
 
 # Determine HOST_LINK_VERSION on Darwin.
 set(HOST_LINK_VERSION)
-if (APPLE)
+if (APPLE AND NOT CMAKE_LINKER MATCHES ".*lld.*")
   set(LD_V_OUTPUT)
   execute_process(
     COMMAND sh -c "${CMAKE_LINKER} -v 2>&1 | head -1"
@@ -475,6 +475,15 @@ add_definitions( -D_GNU_SOURCE )
 
 option(CLANG_BUILD_TOOLS
   "Build the Clang tools. If OFF, just generate build targets." ON)
+
+if(LLVM_ENABLE_PLUGINS OR LLVM_EXPORT_SYMBOLS_FOR_PLUGINS)
+  set(HAVE_CLANG_PLUGIN_SUPPORT ON)
+else()
+  set(HAVE_CLANG_PLUGIN_SUPPORT OFF)
+endif()
+CMAKE_DEPENDENT_OPTION(CLANG_PLUGIN_SUPPORT
+  "Build clang with plugin support" ON
+  "HAVE_CLANG_PLUGIN_SUPPORT" OFF)
 
 option(CLANG_ENABLE_ARCMT "Build ARCMT." ON)
 option(CLANG_ENABLE_STATIC_ANALYZER

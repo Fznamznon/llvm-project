@@ -94,8 +94,10 @@
 #define LLVM_MSC_PREREQ(version) (_MSC_VER >= (version))
 
 // We require at least VS 2019.
+#if !defined(LLVM_FORCE_USE_OLD_TOOLCHAIN)
 #if !LLVM_MSC_PREREQ(1920)
 #error LLVM requires at least VS 2019.
+#endif
 #endif
 
 #else
@@ -319,12 +321,14 @@
 /// LLVM_BUILTIN_UNREACHABLE - On compilers which support it, expands
 /// to an expression which states that it is undefined behavior for the
 /// compiler to reach this point.  Otherwise is not defined.
+///
+/// '#else' is intentionally left out so that other macro logic (e.g.,
+/// LLVM_ASSUME_ALIGNED and llvm_unreachable()) can detect whether
+/// LLVM_BUILTIN_UNREACHABLE has a definition.
 #if __has_builtin(__builtin_unreachable) || defined(__GNUC__)
 # define LLVM_BUILTIN_UNREACHABLE __builtin_unreachable()
 #elif defined(_MSC_VER)
 # define LLVM_BUILTIN_UNREACHABLE __assume(false)
-#else
-# define LLVM_BUILTIN_UNREACHABLE
 #endif
 
 /// LLVM_BUILTIN_TRAP - On compilers which support it, expands to an expression

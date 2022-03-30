@@ -292,9 +292,9 @@ Status ProcessMinidump::DoLoadCore() {
 
   llvm::Optional<lldb::pid_t> pid = m_minidump_parser->GetPid();
   if (!pid) {
-    GetTarget().GetDebugger().GetAsyncErrorStream()->PutCString(
-        "Unable to retrieve process ID from minidump file, setting process ID "
-        "to 1.\n");
+    Debugger::ReportWarning("unable to retrieve process ID from minidump file, "
+                            "setting process ID to 1",
+                            GetTarget().GetDebugger().GetID());
     pid = 1;
   }
   SetID(pid.getValue());
@@ -440,8 +440,8 @@ void ProcessMinidump::BuildMemoryRegions() {
   llvm::sort(*m_memory_regions);
 }
 
-Status ProcessMinidump::GetMemoryRegionInfo(lldb::addr_t load_addr,
-                                            MemoryRegionInfo &region) {
+Status ProcessMinidump::DoGetMemoryRegionInfo(lldb::addr_t load_addr,
+                                              MemoryRegionInfo &region) {
   BuildMemoryRegions();
   region = MinidumpParser::GetMemoryRegionInfo(*m_memory_regions, load_addr);
   return Status();

@@ -18,6 +18,7 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/TypeUtilities.h"
 #include "mlir/Interfaces/InferTypeOpInterface.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallBitVector.h"
@@ -63,10 +64,6 @@ Type mlir::memref::getTensorTypeFromMemRefType(Type type) {
   if (auto memref = type.dyn_cast<UnrankedMemRefType>())
     return UnrankedTensorType::get(memref.getElementType());
   return NoneType::get(type.getContext());
-}
-
-LogicalResult memref::CastOp::verify() {
-  return impl::verifyCastOp(*this, areCastCompatible);
 }
 
 //===----------------------------------------------------------------------===//
@@ -165,7 +162,7 @@ struct SimplifyAllocConst : public OpRewritePattern<AllocLikeOp> {
         alloc.alignmentAttr());
     // Insert a cast so we have the same type as the old alloc.
     auto resultCast =
-        rewriter.create<CastOp>(alloc.getLoc(), newAlloc, alloc.getType());
+        rewriter.create<CastOp>(alloc.getLoc(), alloc.getType(), newAlloc);
 
     rewriter.replaceOp(alloc, {resultCast});
     return success();
@@ -210,23 +207,22 @@ void AllocaOp::getCanonicalizationPatterns(RewritePatternSet &results,
 // AllocaScopeOp
 //===----------------------------------------------------------------------===//
 
-static void print(OpAsmPrinter &p, AllocaScopeOp &op) {
+void AllocaScopeOp::print(OpAsmPrinter &p) {
   bool printBlockTerminators = false;
 
   p << ' ';
-  if (!op.results().empty()) {
-    p << " -> (" << op.getResultTypes() << ")";
+  if (!results().empty()) {
+    p << " -> (" << getResultTypes() << ")";
     printBlockTerminators = true;
   }
   p << ' ';
-  p.printRegion(op.bodyRegion(),
+  p.printRegion(bodyRegion(),
                 /*printEntryBlockArgs=*/false,
                 /*printBlockTerminators=*/printBlockTerminators);
-  p.printOptionalAttrDict(op->getAttrs());
+  p.printOptionalAttrDict((*this)->getAttrs());
 }
 
-static ParseResult parseAllocaScopeOp(OpAsmParser &parser,
-                                      OperationState &result) {
+ParseResult AllocaScopeOp::parse(OpAsmParser &parser, OperationState &result) {
   // Create a region for the body.
   result.regions.reserve(1);
   Region *bodyRegion = result.addRegion();
@@ -248,10 +244,6 @@ static ParseResult parseAllocaScopeOp(OpAsmParser &parser,
   return success();
 }
 
-LogicalResult AllocaScopeOp::verify() {
-  return RegionBranchOpInterface::verifyTypes(*this);
-}
-
 void AllocaScopeOp::getSuccessorRegions(
     Optional<unsigned> index, ArrayRef<Attribute> operands,
     SmallVectorImpl<RegionSuccessor> &regions) {
@@ -261,6 +253,170 @@ void AllocaScopeOp::getSuccessorRegions(
   }
 
   regions.push_back(RegionSuccessor(&bodyRegion()));
+}
+
+/// Given an operation, return whether this op is guaranteed to
+/// allocate an AutomaticAllocationScopeResource
+static bool isGuaranteedAutomaticAllocation(Operation *op) {
+  MemoryEffectOpInterface interface = dyn_cast<MemoryEffectOpInterface>(op);
+  if (!interface)
+    return false;
+  for (auto res : op->getResults()) {
+    if (auto effect =
+            interface.getEffectOnValue<MemoryEffects::Allocate>(res)) {
+      if (isa<SideEffects::AutomaticAllocationScopeResource>(
+              effect->getResource()))
+        return true;
+    }
+  }
+  return false;
+}
+
+/// Given an operation, return whether this op itself could
+/// allocate an AutomaticAllocationScopeResource. Note that
+/// this will not check whether an operation contained within
+/// the op can allocate.
+static bool isOpItselfPotentialAutomaticAllocation(Operation *op) {
+  // This op itself doesn't create a stack allocation,
+  // the inner allocation should be handled separately.
+  if (op->hasTrait<OpTrait::HasRecursiveSideEffects>())
+    return false;
+  MemoryEffectOpInterface interface = dyn_cast<MemoryEffectOpInterface>(op);
+  if (!interface)
+    return true;
+  for (auto res : op->getResults()) {
+    if (auto effect =
+            interface.getEffectOnValue<MemoryEffects::Allocate>(res)) {
+      if (isa<SideEffects::AutomaticAllocationScopeResource>(
+              effect->getResource()))
+        return true;
+    }
+  }
+  return false;
+}
+
+/// Return whether this op is the last non terminating op
+/// in a region. That is to say, it is in a one-block region
+/// and is only followed by a terminator. This prevents
+/// extending the lifetime of allocations.
+static bool lastNonTerminatorInRegion(Operation *op) {
+  return op->getNextNode() == op->getBlock()->getTerminator() &&
+         op->getParentRegion()->getBlocks().size() == 1;
+}
+
+/// Inline an AllocaScopeOp if either the direct parent is an allocation scope
+/// or it contains no allocation.
+struct AllocaScopeInliner : public OpRewritePattern<AllocaScopeOp> {
+  using OpRewritePattern<AllocaScopeOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(AllocaScopeOp op,
+                                PatternRewriter &rewriter) const override {
+    bool hasPotentialAlloca =
+        op->walk<WalkOrder::PreOrder>([&](Operation *alloc) {
+            if (alloc == op)
+              return WalkResult::advance();
+            if (isOpItselfPotentialAutomaticAllocation(alloc))
+              return WalkResult::interrupt();
+            if (alloc->hasTrait<OpTrait::AutomaticAllocationScope>())
+              return WalkResult::skip();
+            return WalkResult::advance();
+          }).wasInterrupted();
+
+    // If this contains no potential allocation, it is always legal to
+    // inline. Otherwise, consider two conditions:
+    if (hasPotentialAlloca) {
+      // If the parent isn't an allocation scope, or we are not the last
+      // non-terminator op in the parent, we will extend the lifetime.
+      if (!op->getParentOp()->hasTrait<OpTrait::AutomaticAllocationScope>())
+        return failure();
+      if (!lastNonTerminatorInRegion(op))
+        return failure();
+    }
+
+    Block *block = &op.getRegion().front();
+    Operation *terminator = block->getTerminator();
+    ValueRange results = terminator->getOperands();
+    rewriter.mergeBlockBefore(block, op);
+    rewriter.replaceOp(op, results);
+    rewriter.eraseOp(terminator);
+    return success();
+  }
+};
+
+/// Move allocations into an allocation scope, if it is legal to
+/// move them (e.g. their operands are available at the location
+/// the op would be moved to).
+struct AllocaScopeHoister : public OpRewritePattern<AllocaScopeOp> {
+  using OpRewritePattern<AllocaScopeOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(AllocaScopeOp op,
+                                PatternRewriter &rewriter) const override {
+
+    if (!op->getParentWithTrait<OpTrait::AutomaticAllocationScope>())
+      return failure();
+
+    Operation *lastParentWithoutScope = op->getParentOp();
+
+    if (!lastParentWithoutScope ||
+        lastParentWithoutScope->hasTrait<OpTrait::AutomaticAllocationScope>())
+      return failure();
+
+    // Only apply to if this is this last non-terminator
+    // op in the block (lest lifetime be extended) of a one
+    // block region
+    if (!lastNonTerminatorInRegion(op) ||
+        !lastNonTerminatorInRegion(lastParentWithoutScope))
+      return failure();
+
+    while (!lastParentWithoutScope->getParentOp()
+                ->hasTrait<OpTrait::AutomaticAllocationScope>()) {
+      lastParentWithoutScope = lastParentWithoutScope->getParentOp();
+      if (!lastParentWithoutScope ||
+          !lastNonTerminatorInRegion(lastParentWithoutScope))
+        return failure();
+    }
+    assert(lastParentWithoutScope->getParentOp()
+               ->hasTrait<OpTrait::AutomaticAllocationScope>());
+
+    Region *containingRegion = nullptr;
+    for (auto &r : lastParentWithoutScope->getRegions()) {
+      if (r.isAncestor(op->getParentRegion())) {
+        assert(containingRegion == nullptr &&
+               "only one region can contain the op");
+        containingRegion = &r;
+      }
+    }
+    assert(containingRegion && "op must be contained in a region");
+
+    SmallVector<Operation *> toHoist;
+    op->walk([&](Operation *alloc) {
+      if (!isGuaranteedAutomaticAllocation(alloc))
+        return WalkResult::skip();
+
+      // If any operand is not defined before the location of
+      // lastParentWithoutScope (i.e. where we would hoist to), skip.
+      if (llvm::any_of(alloc->getOperands(), [&](Value v) {
+            return containingRegion->isAncestor(v.getParentRegion());
+          }))
+        return WalkResult::skip();
+      toHoist.push_back(alloc);
+      return WalkResult::advance();
+    });
+
+    if (toHoist.empty())
+      return failure();
+    rewriter.setInsertionPoint(lastParentWithoutScope);
+    for (auto *op : toHoist) {
+      auto *cloned = rewriter.clone(*op);
+      rewriter.replaceOp(op, cloned->getResults());
+    }
+    return success();
+  }
+};
+
+void AllocaScopeOp::getCanonicalizationPatterns(RewritePatternSet &results,
+                                                MLIRContext *context) {
+  results.add<AllocaScopeInliner, AllocaScopeHoister>(context);
 }
 
 //===----------------------------------------------------------------------===//
@@ -603,6 +759,12 @@ computeMemRefRankReductionMask(MemRefType originalType, MemRefType reducedType,
       if (attr.cast<IntegerAttr>().getInt() == 1)
         unusedDims.set(dim.index());
 
+  // Early exit for the case where the number of unused dims matches the number
+  // of ranks reduced.
+  if (static_cast<int64_t>(unusedDims.count()) + reducedType.getRank() ==
+      originalType.getRank())
+    return unusedDims;
+
   SmallVector<int64_t> originalStrides, candidateStrides;
   int64_t originalOffset, candidateOffset;
   if (failed(
@@ -782,17 +944,16 @@ void DmaStartOp::build(OpBuilder &builder, OperationState &result,
     result.addOperands({stride, elementsPerStride});
 }
 
-static void print(OpAsmPrinter &p, DmaStartOp op) {
-  p << " " << op.getSrcMemRef() << '[' << op.getSrcIndices() << "], "
-    << op.getDstMemRef() << '[' << op.getDstIndices() << "], "
-    << op.getNumElements() << ", " << op.getTagMemRef() << '['
-    << op.getTagIndices() << ']';
-  if (op.isStrided())
-    p << ", " << op.getStride() << ", " << op.getNumElementsPerStride();
+void DmaStartOp::print(OpAsmPrinter &p) {
+  p << " " << getSrcMemRef() << '[' << getSrcIndices() << "], "
+    << getDstMemRef() << '[' << getDstIndices() << "], " << getNumElements()
+    << ", " << getTagMemRef() << '[' << getTagIndices() << ']';
+  if (isStrided())
+    p << ", " << getStride() << ", " << getNumElementsPerStride();
 
-  p.printOptionalAttrDict(op->getAttrs());
-  p << " : " << op.getSrcMemRef().getType() << ", "
-    << op.getDstMemRef().getType() << ", " << op.getTagMemRef().getType();
+  p.printOptionalAttrDict((*this)->getAttrs());
+  p << " : " << getSrcMemRef().getType() << ", " << getDstMemRef().getType()
+    << ", " << getTagMemRef().getType();
 }
 
 // Parse DmaStartOp.
@@ -803,16 +964,15 @@ static void print(OpAsmPrinter &p, DmaStartOp op) {
 //                       memref<1024 x f32, 2>,
 //                       memref<1 x i32>
 //
-static ParseResult parseDmaStartOp(OpAsmParser &parser,
-                                   OperationState &result) {
-  OpAsmParser::OperandType srcMemRefInfo;
-  SmallVector<OpAsmParser::OperandType, 4> srcIndexInfos;
-  OpAsmParser::OperandType dstMemRefInfo;
-  SmallVector<OpAsmParser::OperandType, 4> dstIndexInfos;
-  OpAsmParser::OperandType numElementsInfo;
-  OpAsmParser::OperandType tagMemrefInfo;
-  SmallVector<OpAsmParser::OperandType, 4> tagIndexInfos;
-  SmallVector<OpAsmParser::OperandType, 2> strideInfo;
+ParseResult DmaStartOp::parse(OpAsmParser &parser, OperationState &result) {
+  OpAsmParser::UnresolvedOperand srcMemRefInfo;
+  SmallVector<OpAsmParser::UnresolvedOperand, 4> srcIndexInfos;
+  OpAsmParser::UnresolvedOperand dstMemRefInfo;
+  SmallVector<OpAsmParser::UnresolvedOperand, 4> dstIndexInfos;
+  OpAsmParser::UnresolvedOperand numElementsInfo;
+  OpAsmParser::UnresolvedOperand tagMemrefInfo;
+  SmallVector<OpAsmParser::UnresolvedOperand, 4> tagIndexInfos;
+  SmallVector<OpAsmParser::UnresolvedOperand, 2> strideInfo;
 
   SmallVector<Type, 3> types;
   auto indexType = parser.getBuilder().getIndexType();
@@ -997,11 +1157,11 @@ LogicalResult GenericAtomicRMWOp::verify() {
   return hasSideEffects ? failure() : success();
 }
 
-static ParseResult parseGenericAtomicRMWOp(OpAsmParser &parser,
-                                           OperationState &result) {
-  OpAsmParser::OperandType memref;
+ParseResult GenericAtomicRMWOp::parse(OpAsmParser &parser,
+                                      OperationState &result) {
+  OpAsmParser::UnresolvedOperand memref;
   Type memrefType;
-  SmallVector<OpAsmParser::OperandType, 4> ivs;
+  SmallVector<OpAsmParser::UnresolvedOperand, 4> ivs;
 
   Type indexType = parser.getBuilder().getIndexType();
   if (parser.parseOperand(memref) ||
@@ -1019,11 +1179,11 @@ static ParseResult parseGenericAtomicRMWOp(OpAsmParser &parser,
   return success();
 }
 
-static void print(OpAsmPrinter &p, GenericAtomicRMWOp op) {
-  p << ' ' << op.memref() << "[" << op.indices()
-    << "] : " << op.memref().getType() << ' ';
-  p.printRegion(op.getRegion());
-  p.printOptionalAttrDict(op->getAttrs());
+void GenericAtomicRMWOp::print(OpAsmPrinter &p) {
+  p << ' ' << memref() << "[" << indices() << "] : " << memref().getType()
+    << ' ';
+  p.printRegion(getRegion());
+  p.printOptionalAttrDict((*this)->getAttrs());
 }
 
 //===----------------------------------------------------------------------===//
@@ -1124,6 +1284,13 @@ LogicalResult GlobalOp::verify() {
   return success();
 }
 
+ElementsAttr GlobalOp::getConstantInitValue() {
+  auto initVal = initial_value();
+  if (constant() && initVal.hasValue())
+    return initVal.getValue().cast<ElementsAttr>();
+  return {};
+}
+
 //===----------------------------------------------------------------------===//
 // GetGlobalOp
 //===----------------------------------------------------------------------===//
@@ -1167,22 +1334,21 @@ OpFoldResult LoadOp::fold(ArrayRef<Attribute> cstOperands) {
 // PrefetchOp
 //===----------------------------------------------------------------------===//
 
-static void print(OpAsmPrinter &p, PrefetchOp op) {
-  p << " " << op.memref() << '[';
-  p.printOperands(op.indices());
-  p << ']' << ", " << (op.isWrite() ? "write" : "read");
-  p << ", locality<" << op.localityHint();
-  p << ">, " << (op.isDataCache() ? "data" : "instr");
+void PrefetchOp::print(OpAsmPrinter &p) {
+  p << " " << memref() << '[';
+  p.printOperands(indices());
+  p << ']' << ", " << (isWrite() ? "write" : "read");
+  p << ", locality<" << localityHint();
+  p << ">, " << (isDataCache() ? "data" : "instr");
   p.printOptionalAttrDict(
-      op->getAttrs(),
+      (*this)->getAttrs(),
       /*elidedAttrs=*/{"localityHint", "isWrite", "isDataCache"});
-  p << " : " << op.getMemRefType();
+  p << " : " << getMemRefType();
 }
 
-static ParseResult parsePrefetchOp(OpAsmParser &parser,
-                                   OperationState &result) {
-  OpAsmParser::OperandType memrefInfo;
-  SmallVector<OpAsmParser::OperandType, 4> indexInfo;
+ParseResult PrefetchOp::parse(OpAsmParser &parser, OperationState &result) {
+  OpAsmParser::UnresolvedOperand memrefInfo;
+  SmallVector<OpAsmParser::UnresolvedOperand, 4> indexInfo;
   IntegerAttr localityHint;
   MemRefType type;
   StringRef readOrWrite, cacheType;
@@ -1358,6 +1524,36 @@ LogicalResult ReinterpretCastOp::verify() {
   return success();
 }
 
+OpFoldResult ReinterpretCastOp::fold(ArrayRef<Attribute> /*operands*/) {
+  Value src = source();
+  auto getPrevSrc = [&]() -> Value {
+    // reinterpret_cast(reinterpret_cast(x)) -> reinterpret_cast(x).
+    if (auto prev = src.getDefiningOp<ReinterpretCastOp>())
+      return prev.source();
+
+    // reinterpret_cast(cast(x)) -> reinterpret_cast(x).
+    if (auto prev = src.getDefiningOp<CastOp>())
+      return prev.source();
+
+    // reinterpret_cast(subview(x)) -> reinterpret_cast(x) if subview offsets
+    // are 0.
+    if (auto prev = src.getDefiningOp<SubViewOp>())
+      if (llvm::all_of(prev.getMixedOffsets(), [](OpFoldResult val) {
+            return isConstantIntValue(val, 0);
+          }))
+        return prev.source();
+
+    return nullptr;
+  };
+
+  if (auto prevSrc = getPrevSrc()) {
+    sourceMutable().assign(prevSrc);
+    return getResult();
+  }
+
+  return nullptr;
+}
+
 //===----------------------------------------------------------------------===//
 // Reassociative reshape ops
 //===----------------------------------------------------------------------===//
@@ -1376,14 +1572,6 @@ SmallVector<AffineMap, 4> ExpandShapeOp::getReassociationMaps() {
 SmallVector<ReassociationExprs, 4> ExpandShapeOp::getReassociationExprs() {
   return convertReassociationIndicesToExprs(getContext(),
                                             getReassociationIndices());
-}
-
-static void print(OpAsmPrinter &p, ExpandShapeOp op) {
-  ::mlir::printReshapeOp<ExpandShapeOp>(p, op);
-}
-
-static void print(OpAsmPrinter &p, CollapseShapeOp op) {
-  ::mlir::printReshapeOp<CollapseShapeOp>(p, op);
 }
 
 /// Detect whether memref dims [dim, dim + extent) can be reshaped without
@@ -1485,18 +1673,6 @@ computeReshapeCollapsedType(MemRefType type,
   return canonicalizeStridedLayout(
       MemRefType::Builder(type).setShape(newSizes).setLayout(
           AffineMapAttr::get(layout)));
-}
-
-void ExpandShapeOp::build(OpBuilder &b, OperationState &result, Value src,
-                          ArrayRef<ReassociationIndices> reassociation,
-                          ArrayRef<NamedAttribute> attrs) {
-  auto memRefType = src.getType().cast<MemRefType>();
-  auto resultType = computeReshapeCollapsedType(
-      memRefType, getSymbolLessAffineMaps(convertReassociationIndicesToExprs(
-                      b.getContext(), reassociation)));
-  build(b, result, resultType, src, attrs);
-  result.addAttribute(getReassociationAttrName(),
-                      getReassociationIndicesAttribute(b, reassociation));
 }
 
 void CollapseShapeOp::build(OpBuilder &b, OperationState &result, Value src,
@@ -2156,8 +2332,8 @@ public:
       rewriter.replaceOp(subViewOp, subViewOp.source());
       return success();
     }
-    rewriter.replaceOpWithNewOp<CastOp>(subViewOp, subViewOp.source(),
-                                        subViewOp.getType());
+    rewriter.replaceOpWithNewOp<CastOp>(subViewOp, subViewOp.getType(),
+                                        subViewOp.source());
     return success();
   }
 };
@@ -2177,7 +2353,7 @@ struct SubViewReturnTypeCanonicalizer {
 /// A canonicalizer wrapper to replace SubViewOps.
 struct SubViewCanonicalizer {
   void operator()(PatternRewriter &rewriter, SubViewOp op, SubViewOp newOp) {
-    rewriter.replaceOpWithNewOp<CastOp>(op, newOp, op.getType());
+    rewriter.replaceOpWithNewOp<CastOp>(op, op.getType(), newOp);
   }
 };
 
@@ -2245,16 +2421,14 @@ void TransposeOp::build(OpBuilder &b, OperationState &result, Value in,
 }
 
 // transpose $in $permutation attr-dict : type($in) `to` type(results)
-static void print(OpAsmPrinter &p, TransposeOp op) {
-  p << " " << op.in() << " " << op.permutation();
-  p.printOptionalAttrDict(op->getAttrs(),
-                          {TransposeOp::getPermutationAttrName()});
-  p << " : " << op.in().getType() << " to " << op.getType();
+void TransposeOp::print(OpAsmPrinter &p) {
+  p << " " << in() << " " << permutation();
+  p.printOptionalAttrDict((*this)->getAttrs(), {getPermutationAttrName()});
+  p << " : " << in().getType() << " to " << getType();
 }
 
-static ParseResult parseTransposeOp(OpAsmParser &parser,
-                                    OperationState &result) {
-  OpAsmParser::OperandType in;
+ParseResult TransposeOp::parse(OpAsmParser &parser, OperationState &result) {
+  OpAsmParser::UnresolvedOperand in;
   AffineMap permutation;
   MemRefType srcType, dstType;
   if (parser.parseOperand(in) || parser.parseAffineMap(permutation) ||
@@ -2295,39 +2469,6 @@ OpFoldResult TransposeOp::fold(ArrayRef<Attribute>) {
 //===----------------------------------------------------------------------===//
 // ViewOp
 //===----------------------------------------------------------------------===//
-
-static ParseResult parseViewOp(OpAsmParser &parser, OperationState &result) {
-  OpAsmParser::OperandType srcInfo;
-  SmallVector<OpAsmParser::OperandType, 1> offsetInfo;
-  SmallVector<OpAsmParser::OperandType, 4> sizesInfo;
-  auto indexType = parser.getBuilder().getIndexType();
-  Type srcType, dstType;
-  SMLoc offsetLoc;
-  if (parser.parseOperand(srcInfo) || parser.getCurrentLocation(&offsetLoc) ||
-      parser.parseOperandList(offsetInfo, OpAsmParser::Delimiter::Square))
-    return failure();
-
-  if (offsetInfo.size() != 1)
-    return parser.emitError(offsetLoc) << "expects 1 offset operand";
-
-  return failure(
-      parser.parseOperandList(sizesInfo, OpAsmParser::Delimiter::Square) ||
-      parser.parseOptionalAttrDict(result.attributes) ||
-      parser.parseColonType(srcType) ||
-      parser.resolveOperand(srcInfo, srcType, result.operands) ||
-      parser.resolveOperands(offsetInfo, indexType, result.operands) ||
-      parser.resolveOperands(sizesInfo, indexType, result.operands) ||
-      parser.parseKeywordType("to", dstType) ||
-      parser.addTypeToList(dstType, result.types));
-}
-
-static void print(OpAsmPrinter &p, ViewOp op) {
-  p << ' ' << op.getOperand(0) << '[';
-  p.printOperand(op.byte_shift());
-  p << "][" << op.sizes() << ']';
-  p.printOptionalAttrDict(op->getAttrs());
-  p << " : " << op.getOperand(0).getType() << " to " << op.getType();
-}
 
 LogicalResult ViewOp::verify() {
   auto baseType = getOperand(0).getType().cast<MemRefType>();
@@ -2422,7 +2563,7 @@ struct ViewOpShapeFolder : public OpRewritePattern<ViewOp> {
                                              viewOp.getOperand(0),
                                              viewOp.byte_shift(), newOperands);
     // Insert a cast so we have the same type as the old memref type.
-    rewriter.replaceOpWithNewOp<CastOp>(viewOp, newViewOp, viewOp.getType());
+    rewriter.replaceOpWithNewOp<CastOp>(viewOp, viewOp.getType(), newViewOp);
     return success();
   }
 };

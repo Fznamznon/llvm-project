@@ -10,17 +10,18 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "AllocationOrder.h"
 #include "RegAllocEvictionAdvisor.h"
 #include "RegAllocGreedy.h"
-#include "RegAllocScore.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/MLModelRunner.h"
+#if defined(LLVM_HAVE_TF_AOT_REGALLOCEVICTMODEL) || defined(LLVM_HAVE_TF_API) 
 #include "llvm/Analysis/ModelUnderTrainingRunner.h"
 #include "llvm/Analysis/NoInferenceModelRunner.h"
+#endif
 #include "llvm/Analysis/ReleaseModeModelRunner.h"
-#include "llvm/Analysis/Utils/TFUtils.h"
 #include "llvm/CodeGen/CalcSpillWeights.h"
-#include "llvm/CodeGen/MachineBasicBlock.h"
+#include "llvm/CodeGen/LiveRegMatrix.h"
 #include "llvm/CodeGen/MachineBlockFrequencyInfo.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineLoopInfo.h"
@@ -28,13 +29,11 @@
 #include "llvm/CodeGen/Passes.h"
 #include "llvm/CodeGen/RegisterClassInfo.h"
 #include "llvm/CodeGen/VirtRegMap.h"
-#include "llvm/Config/config.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/Pass.h"
 #include "llvm/PassRegistry.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "llvm/Target/TargetMachine.h"
 
 #include <array>
 #include <memory>
@@ -46,10 +45,16 @@ using namespace llvm;
 // Generated header in release (AOT) mode
 #if defined(LLVM_HAVE_TF_AOT_REGALLOCEVICTMODEL)
 #include "RegallocEvictModel.h"
+using CompiledModelType = RegallocEvictModel;
+#else
+using CompiledModelType = NoopSavedModelImpl;
 #endif
 
 // Options that only make sense in development mode
 #ifdef LLVM_HAVE_TF_API
+#include "RegAllocScore.h"
+#include "llvm/Analysis/Utils/TFUtils.h"
+
 static cl::opt<std::string> TrainingLog(
     "regalloc-training-log", cl::Hidden,
     cl::desc("Training log for the register allocator eviction model"));
@@ -318,7 +323,6 @@ private:
 // ===================================
 // Release (AOT) - specifics
 // ===================================
-#if defined(LLVM_HAVE_TF_AOT_REGALLOCEVICTMODEL)
 const std::array<std::string, FeatureIDs::FeatureCount> FeatureNames{
 #define _GETNAME(_, NAME, __, ___) #NAME,
     RA_EVICT_FEATURES_LIST(_GETNAME)
@@ -344,15 +348,14 @@ private:
   std::unique_ptr<RegAllocEvictionAdvisor>
   getAdvisor(const MachineFunction &MF, const RAGreedy &RA) override {
     if (!Runner)
-      Runner = std::make_unique<ReleaseModeModelRunner<RegallocEvictModel>>(
+      Runner = std::make_unique<ReleaseModeModelRunner<CompiledModelType>>(
           MF.getFunction().getContext(), FeatureNames, DecisionName);
     return std::make_unique<MLEvictAdvisor>(
         MF, RA, Runner.get(), getAnalysis<MachineBlockFrequencyInfo>(),
         getAnalysis<MachineLoopInfo>());
   }
-  std::unique_ptr<ReleaseModeModelRunner<RegallocEvictModel>> Runner;
+  std::unique_ptr<ReleaseModeModelRunner<CompiledModelType>> Runner;
 };
-#endif
 
 // ===================================
 // Development mode-specifics
@@ -901,11 +904,9 @@ bool RegAllocScoring::runOnMachineFunction(MachineFunction &MF) {
 }
 #endif // #ifdef LLVM_HAVE_TF_API
 
-#if defined(LLVM_HAVE_TF_AOT_REGALLOCEVICTMODEL)
 RegAllocEvictionAdvisorAnalysis *llvm::createReleaseModeAdvisor() {
   return new ReleaseModeEvictionAdvisorAnalysis();
 }
-#endif
 
 // In all cases except development mode, we don't need scoring.
 #if !defined(LLVM_HAVE_TF_API)

@@ -20,14 +20,13 @@
 #ifndef LLD_ELF_SYNTHETIC_SECTIONS_H
 #define LLD_ELF_SYNTHETIC_SECTIONS_H
 
-#include "DWARF.h"
-#include "EhFrame.h"
+#include "Config.h"
 #include "InputSection.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/MC/StringTableBuilder.h"
 #include "llvm/Support/Endian.h"
-#include <functional>
+#include "llvm/Support/Threading.h"
 
 namespace lld {
 namespace elf {
@@ -762,6 +761,7 @@ class IBTPltSection : public SyntheticSection {
 public:
   IBTPltSection();
   void writeTo(uint8_t *Buf) override;
+  bool isNeeded() const override;
   size_t getSize() const override;
 };
 
@@ -1082,7 +1082,10 @@ public:
   void finalizeContents() override;
   InputSection *getLinkOrderDep() const;
 
-  static bool classof(const SectionBase *d);
+  static bool classof(const SectionBase *sec) {
+    return sec->kind() == InputSectionBase::Synthetic &&
+           sec->type == llvm::ELF::SHT_ARM_EXIDX;
+  }
 
   // Links to the ARMExidxSections so we can transfer the relocations once the
   // layout is known.

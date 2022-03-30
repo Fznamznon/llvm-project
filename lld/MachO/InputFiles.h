@@ -86,6 +86,9 @@ struct CallGraphEntry {
   uint32_t toIndex;
   // Number of calls from callee to caller in the profile.
   uint64_t count;
+
+  CallGraphEntry(uint32_t fromIndex, uint32_t toIndex, uint64_t count)
+      : fromIndex(fromIndex), toIndex(toIndex), count(count) {}
 };
 
 class InputFile {
@@ -160,7 +163,7 @@ private:
   Symbol *parseNonSectionSymbol(const NList &sym, StringRef name);
   template <class SectionHeader>
   void parseRelocations(ArrayRef<SectionHeader> sectionHeaders,
-                        const SectionHeader &, Subsections &);
+                        const SectionHeader &, Section &);
   void parseDebugInfo();
   void registerCompactUnwind();
 };

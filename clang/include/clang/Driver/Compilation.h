@@ -145,6 +145,8 @@ public:
     return ActiveOffloadMask & Kind;
   }
 
+  unsigned getActiveOffloadKinds() const { return ActiveOffloadMask; }
+
   /// Iterator that visits device toolchains of a given kind.
   using const_offload_toolchains_iterator =
       const std::multimap<Action::OffloadKind,
@@ -155,6 +157,11 @@ public:
 
   template <Action::OffloadKind Kind>
   const_offload_toolchains_range getOffloadToolChains() const {
+    return OrderedOffloadingToolchains.equal_range(Kind);
+  }
+
+  const_offload_toolchains_range
+  getOffloadToolChains(Action::OffloadKind Kind) const {
     return OrderedOffloadingToolchains.equal_range(Kind);
   }
 

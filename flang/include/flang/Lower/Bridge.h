@@ -5,13 +5,9 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-///
-/// \file
-/// Implements lowering. Convert Fortran source to
-/// [MLIR](https://github.com/tensorflow/mlir).
-///
-/// [Coding style](https://llvm.org/docs/CodingStandards.html)
-///
+//
+// Coding style: https://mlir.llvm.org/getting_started/DeveloperGuide/
+//
 //===----------------------------------------------------------------------===//
 
 #ifndef FORTRAN_LOWER_BRIDGE_H
@@ -64,7 +60,10 @@ public:
   //===--------------------------------------------------------------------===//
 
   mlir::MLIRContext &getMLIRContext() { return context; }
+
+  /// Get the ModuleOp. It can never be null, which is asserted in the ctor.
   mlir::ModuleOp &getModule() { return *module.get(); }
+
   const Fortran::common::IntrinsicTypeDefaultKinds &getDefaultKinds() const {
     return defaultKinds;
   }

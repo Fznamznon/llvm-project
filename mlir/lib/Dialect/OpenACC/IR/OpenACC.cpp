@@ -54,7 +54,7 @@ static ParseResult parseRegions(OpAsmParser &parser, OperationState &state,
 
 static ParseResult
 parseOperandList(OpAsmParser &parser, StringRef keyword,
-                 SmallVectorImpl<OpAsmParser::OperandType> &args,
+                 SmallVectorImpl<OpAsmParser::UnresolvedOperand> &args,
                  SmallVectorImpl<Type> &argTypes, OperationState &result) {
   if (failed(parser.parseOptionalKeyword(keyword)))
     return success();
@@ -67,7 +67,7 @@ parseOperandList(OpAsmParser &parser, StringRef keyword,
     return success();
 
   do {
-    OpAsmParser::OperandType arg;
+    OpAsmParser::UnresolvedOperand arg;
     Type type;
 
     if (parser.parseRegionArgument(arg) || parser.parseColonType(type))
@@ -97,7 +97,7 @@ static void printOperandList(Operation::operand_range operands,
 }
 
 static ParseResult parseOptionalOperand(OpAsmParser &parser, StringRef keyword,
-                                        OpAsmParser::OperandType &operand,
+                                        OpAsmParser::UnresolvedOperand &operand,
                                         Type type, bool &hasOptional,
                                         OperationState &result) {
   hasOptional = false;
@@ -113,7 +113,7 @@ static ParseResult parseOptionalOperand(OpAsmParser &parser, StringRef keyword,
 
 static ParseResult parseOperandAndType(OpAsmParser &parser,
                                        OperationState &result) {
-  OpAsmParser::OperandType operand;
+  OpAsmParser::UnresolvedOperand operand;
   Type type;
   if (parser.parseOperand(operand) || parser.parseColonType(type) ||
       parser.resolveOperand(operand, type, result.operands))
@@ -128,7 +128,7 @@ static ParseResult parseOperandAndType(OpAsmParser &parser,
 static OptionalParseResult parseOptionalOperandAndType(OpAsmParser &parser,
                                                        StringRef keyword,
                                                        OperationState &result) {
-  OpAsmParser::OperandType operand;
+  OpAsmParser::UnresolvedOperand operand;
   if (succeeded(parser.parseOptionalKeyword(keyword))) {
     return failure(parser.parseLParen() ||
                    parseOperandAndType(parser, result) || parser.parseRParen());
@@ -218,10 +218,9 @@ struct RemoveConstantIfCondition : public OpRewritePattern<OpTy> {
 ///                             `private` `(` value-list `)`?
 ///                             `firstprivate` `(` value-list `)`?
 ///                             region attr-dict?
-static ParseResult parseParallelOp(OpAsmParser &parser,
-                                   OperationState &result) {
+ParseResult ParallelOp::parse(OpAsmParser &parser, OperationState &result) {
   Builder &builder = parser.getBuilder();
-  SmallVector<OpAsmParser::OperandType, 8> privateOperands,
+  SmallVector<OpAsmParser::UnresolvedOperand, 8> privateOperands,
       firstprivateOperands, copyOperands, copyinOperands,
       copyinReadonlyOperands, copyoutOperands, copyoutZeroOperands,
       createOperands, createZeroOperands, noCreateOperands, presentOperands,
@@ -234,7 +233,7 @@ static ParseResult parseParallelOp(OpAsmParser &parser,
       firstprivateOperandTypes;
 
   SmallVector<Type, 8> operandTypes;
-  OpAsmParser::OperandType ifCond, selfCond;
+  OpAsmParser::UnresolvedOperand ifCond, selfCond;
   bool hasIfCond = false, hasSelfCond = false;
   OptionalParseResult async, numGangs, numWorkers, vectorLength;
   Type i1Type = builder.getI1Type();
@@ -390,99 +389,94 @@ static ParseResult parseParallelOp(OpAsmParser &parser,
   return success();
 }
 
-static void print(OpAsmPrinter &printer, ParallelOp &op) {
+void ParallelOp::print(OpAsmPrinter &printer) {
   // async()?
-  if (Value async = op.async())
+  if (Value async = this->async())
     printer << " " << ParallelOp::getAsyncKeyword() << "(" << async << ": "
             << async.getType() << ")";
 
   // wait()?
-  printOperandList(op.waitOperands(), ParallelOp::getWaitKeyword(), printer);
+  printOperandList(waitOperands(), ParallelOp::getWaitKeyword(), printer);
 
   // num_gangs()?
-  if (Value numGangs = op.numGangs())
+  if (Value numGangs = this->numGangs())
     printer << " " << ParallelOp::getNumGangsKeyword() << "(" << numGangs
             << ": " << numGangs.getType() << ")";
 
   // num_workers()?
-  if (Value numWorkers = op.numWorkers())
+  if (Value numWorkers = this->numWorkers())
     printer << " " << ParallelOp::getNumWorkersKeyword() << "(" << numWorkers
             << ": " << numWorkers.getType() << ")";
 
   // vector_length()?
-  if (Value vectorLength = op.vectorLength())
+  if (Value vectorLength = this->vectorLength())
     printer << " " << ParallelOp::getVectorLengthKeyword() << "("
             << vectorLength << ": " << vectorLength.getType() << ")";
 
   // if()?
-  if (Value ifCond = op.ifCond())
+  if (Value ifCond = this->ifCond())
     printer << " " << ParallelOp::getIfKeyword() << "(" << ifCond << ")";
 
   // self()?
-  if (Value selfCond = op.selfCond())
+  if (Value selfCond = this->selfCond())
     printer << " " << ParallelOp::getSelfKeyword() << "(" << selfCond << ")";
 
   // reduction()?
-  printOperandList(op.reductionOperands(), ParallelOp::getReductionKeyword(),
+  printOperandList(reductionOperands(), ParallelOp::getReductionKeyword(),
                    printer);
 
   // copy()?
-  printOperandList(op.copyOperands(), ParallelOp::getCopyKeyword(), printer);
+  printOperandList(copyOperands(), ParallelOp::getCopyKeyword(), printer);
 
   // copyin()?
-  printOperandList(op.copyinOperands(), ParallelOp::getCopyinKeyword(),
-                   printer);
+  printOperandList(copyinOperands(), ParallelOp::getCopyinKeyword(), printer);
 
   // copyin_readonly()?
-  printOperandList(op.copyinReadonlyOperands(),
+  printOperandList(copyinReadonlyOperands(),
                    ParallelOp::getCopyinReadonlyKeyword(), printer);
 
   // copyout()?
-  printOperandList(op.copyoutOperands(), ParallelOp::getCopyoutKeyword(),
-                   printer);
+  printOperandList(copyoutOperands(), ParallelOp::getCopyoutKeyword(), printer);
 
   // copyout_zero()?
-  printOperandList(op.copyoutZeroOperands(),
-                   ParallelOp::getCopyoutZeroKeyword(), printer);
-
-  // create()?
-  printOperandList(op.createOperands(), ParallelOp::getCreateKeyword(),
+  printOperandList(copyoutZeroOperands(), ParallelOp::getCopyoutZeroKeyword(),
                    printer);
 
+  // create()?
+  printOperandList(createOperands(), ParallelOp::getCreateKeyword(), printer);
+
   // create_zero()?
-  printOperandList(op.createZeroOperands(), ParallelOp::getCreateZeroKeyword(),
+  printOperandList(createZeroOperands(), ParallelOp::getCreateZeroKeyword(),
                    printer);
 
   // no_create()?
-  printOperandList(op.noCreateOperands(), ParallelOp::getNoCreateKeyword(),
+  printOperandList(noCreateOperands(), ParallelOp::getNoCreateKeyword(),
                    printer);
 
   // present()?
-  printOperandList(op.presentOperands(), ParallelOp::getPresentKeyword(),
-                   printer);
+  printOperandList(presentOperands(), ParallelOp::getPresentKeyword(), printer);
 
   // deviceptr()?
-  printOperandList(op.devicePtrOperands(), ParallelOp::getDevicePtrKeyword(),
+  printOperandList(devicePtrOperands(), ParallelOp::getDevicePtrKeyword(),
                    printer);
 
   // attach()?
-  printOperandList(op.attachOperands(), ParallelOp::getAttachKeyword(),
-                   printer);
+  printOperandList(attachOperands(), ParallelOp::getAttachKeyword(), printer);
 
   // private()?
-  printOperandList(op.gangPrivateOperands(), ParallelOp::getPrivateKeyword(),
+  printOperandList(gangPrivateOperands(), ParallelOp::getPrivateKeyword(),
                    printer);
 
   // firstprivate()?
-  printOperandList(op.gangFirstPrivateOperands(),
+  printOperandList(gangFirstPrivateOperands(),
                    ParallelOp::getFirstPrivateKeyword(), printer);
 
   printer << ' ';
-  printer.printRegion(op.region(),
+  printer.printRegion(region(),
                       /*printEntryBlockArgs=*/false,
                       /*printBlockTerminators=*/true);
   printer.printOptionalAttrDictWithKeyword(
-      op->getAttrs(), ParallelOp::getOperandSegmentSizeAttr());
+      (*this)->getAttrs(), ParallelOp::getOperandSegmentSizeAttr());
 }
 
 unsigned ParallelOp::getNumDataOperands() {
@@ -518,12 +512,13 @@ Value ParallelOp::getDataOperand(unsigned i) {
 ///              (`private` `(` value-list `)`)?
 ///              (`reduction` `(` value-list `)`)?
 ///              region attr-dict?
-static ParseResult parseLoopOp(OpAsmParser &parser, OperationState &result) {
+ParseResult LoopOp::parse(OpAsmParser &parser, OperationState &result) {
   Builder &builder = parser.getBuilder();
   unsigned executionMapping = OpenACCExecMapping::NONE;
   SmallVector<Type, 8> operandTypes;
-  SmallVector<OpAsmParser::OperandType, 8> privateOperands, reductionOperands;
-  SmallVector<OpAsmParser::OperandType, 8> tileOperands;
+  SmallVector<OpAsmParser::UnresolvedOperand, 8> privateOperands,
+      reductionOperands;
+  SmallVector<OpAsmParser::UnresolvedOperand, 8> tileOperands;
   OptionalParseResult gangNum, gangStatic, worker, vector;
 
   // gang?
@@ -606,12 +601,12 @@ static ParseResult parseLoopOp(OpAsmParser &parser, OperationState &result) {
   return success();
 }
 
-static void print(OpAsmPrinter &printer, LoopOp &op) {
-  unsigned execMapping = op.exec_mapping();
+void LoopOp::print(OpAsmPrinter &printer) {
+  unsigned execMapping = exec_mapping();
   if (execMapping & OpenACCExecMapping::GANG) {
     printer << " " << LoopOp::getGangKeyword();
-    Value gangNum = op.gangNum();
-    Value gangStatic = op.gangStatic();
+    Value gangNum = this->gangNum();
+    Value gangStatic = this->gangStatic();
 
     // Print optional gang operands
     if (gangNum || gangStatic) {
@@ -633,7 +628,7 @@ static void print(OpAsmPrinter &printer, LoopOp &op) {
     printer << " " << LoopOp::getWorkerKeyword();
 
     // Print optional worker operand if present
-    if (Value workerNum = op.workerNum())
+    if (Value workerNum = this->workerNum())
       printer << "(" << workerNum << ": " << workerNum.getType() << ")";
   }
 
@@ -641,31 +636,30 @@ static void print(OpAsmPrinter &printer, LoopOp &op) {
     printer << " " << LoopOp::getVectorKeyword();
 
     // Print optional vector operand if present
-    if (Value vectorLength = op.vectorLength())
+    if (Value vectorLength = this->vectorLength())
       printer << "(" << vectorLength << ": " << vectorLength.getType() << ")";
   }
 
   // tile()?
-  printOperandList(op.tileOperands(), LoopOp::getTileKeyword(), printer);
+  printOperandList(tileOperands(), LoopOp::getTileKeyword(), printer);
 
   // private()?
-  printOperandList(op.privateOperands(), LoopOp::getPrivateKeyword(), printer);
+  printOperandList(privateOperands(), LoopOp::getPrivateKeyword(), printer);
 
   // reduction()?
-  printOperandList(op.reductionOperands(), LoopOp::getReductionKeyword(),
-                   printer);
+  printOperandList(reductionOperands(), LoopOp::getReductionKeyword(), printer);
 
-  if (op.getNumResults() > 0)
-    printer << " -> (" << op.getResultTypes() << ")";
+  if (getNumResults() > 0)
+    printer << " -> (" << getResultTypes() << ")";
 
   printer << ' ';
-  printer.printRegion(op.region(),
+  printer.printRegion(region(),
                       /*printEntryBlockArgs=*/false,
                       /*printBlockTerminators=*/true);
 
   printer.printOptionalAttrDictWithKeyword(
-      op->getAttrs(), {LoopOp::getExecutionMappingAttrName(),
-                       LoopOp::getOperandSegmentSizeAttr()});
+      (*this)->getAttrs(), {LoopOp::getExecutionMappingAttrName(),
+                            LoopOp::getOperandSegmentSizeAttr()});
 }
 
 LogicalResult acc::LoopOp::verify() {
