@@ -721,4 +721,11 @@ constexpr int f(int i = G<T>{}.line) {
 
 static_assert(f<int>() != // intentional new line
               f<int>());
+
+template <int sl = std::source_location::current().line()> struct SLS {
+  static const int get = sl;
+};
+
+static_assert(SLS<>::get == __LINE__);
+static_assert(SLS<>::get == __LINE__);
 }
