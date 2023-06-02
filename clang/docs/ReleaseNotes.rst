@@ -591,6 +591,8 @@ Bug Fixes in This Version
   (`#38717 <https://github.com/llvm/llvm-project/issues/38717>_`).
 - Fix an assertion when using ``\u0024`` (``$``) as an identifier, by disallowing
   that construct (`#62133 <https://github.com/llvm/llvm-project/issues/38717>_`).
+- Fixed `static_cast` to array of unknown bound.
+  (`#62863 <https://github.com/llvm/llvm-project/issues/62863>`_).
 
 Bug Fixes to Compiler Builtins
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

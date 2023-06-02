@@ -8853,6 +8853,18 @@ void Sema::completeExprArrayBound(Expr *E) {
       }
     }
   }
+  if (isa<ExplicitCastExpr>(E)) {
+    QualType DestType = E->getType();
+    if (const auto *IAT = Context.getAsIncompleteArrayType(DestType)) {
+      // C++20 [expr.static.cast]p.4: ... If T is “array of unknown bound of U”,
+      // this direct-initialization defines the type of the expression as U[1]
+      QualType ResultType = Context.getConstantArrayType(
+          IAT->getElementType(),
+          llvm::APInt(Context.getTypeSize(Context.getSizeType()), 1),
+          /*SizeExpr=*/nullptr, ArrayType::Normal, /*IndexTypeQuals=*/0);
+      E->setType(ResultType);
+    }
+  }
 }
 
 QualType Sema::getCompletedType(Expr *E) {
