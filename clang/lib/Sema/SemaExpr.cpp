@@ -58,6 +58,7 @@
 #include "llvm/Support/SaveAndRestore.h"
 #include "llvm/Support/TypeSize.h"
 #include <optional>
+#include <iostream>
 
 using namespace clang;
 using namespace sema;
@@ -18171,7 +18172,51 @@ ExprResult Sema::CheckForImmediateInvocation(ExprResult E, FunctionDecl *Decl) {
     return E;
   }
 
-  E = MaybeCreateExprWithCleanups(E);
+  // E = MaybeCreateExprWithCleanups(E);
+  if (Cleanup.exprNeedsCleanups()) {
+    SmallVector<ExprWithCleanups::CleanupObject, 2> Cleanups;
+    struct FindCleanupObjects : RecursiveASTVisitor<FindCleanupObjects> {
+      SmallVectorImpl<ExprWithCleanups::CleanupObject> &Ref;
+      SmallVectorImpl<ExprWithCleanups::CleanupObject> &Cleanups;
+      unsigned FirstCleanup = 0;
+      FindCleanupObjects(SmallVectorImpl<ExprWithCleanups::CleanupObject> &R,
+                         SmallVectorImpl<ExprWithCleanups::CleanupObject> &C,
+                         unsigned FC)
+          : Ref(R), Cleanups(C), FirstCleanup(FC) {}
+      bool VisitBlockDecl(BlockDecl *E) {
+        auto It = std::find_if(
+            Ref.begin() + FirstCleanup, Ref.end(),
+            [E](ExprWithCleanups::CleanupObject Elem) {
+              if (const auto *BD = Elem.dyn_cast<BlockDecl *>(); BD == E)
+                return true;
+              return false;
+            });
+        if (It != Ref.end())
+          Cleanups.push_back(*It);
+        return true;
+      }
+      bool VisitCompoundLiteralExpr(CompoundLiteralExpr *E) {
+        auto It = std::find_if(Ref.begin() + FirstCleanup, Ref.end(),
+                               [E](ExprWithCleanups::CleanupObject Elem) {
+                                 if (const auto *CE =
+                                         Elem.dyn_cast<CompoundLiteralExpr *>();
+                                     CE == E)
+                                   return true;
+                                 return false;
+                               });
+        std::cout << "HERE" << std::endl;
+        if (It != Ref.end()) {
+          Cleanups.push_back(*It);
+          std::cout << "FOUND" << std::endl;
+        }
+        return true;
+      }
+    } Visitor(ExprCleanupObjects, Cleanups,
+              ExprEvalContexts.back().NumCleanupObjects);
+    Visitor.TraverseStmt(E.get());
+    E = ExprWithCleanups::Create(getASTContext(), E.get(),
+                                 Cleanup.cleanupsHaveSideEffects(), Cleanups);
+  }
 
   ConstantExpr *Res = ConstantExpr::Create(
       getASTContext(), E.get(),
