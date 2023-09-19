@@ -8865,6 +8865,14 @@ void Sema::CheckVariableDeclarationType(VarDecl *NewVD) {
     return;
   }
 
+  if (getLangOpts().C23 && NewVD->isConstexpr() &&
+      (T->isAtomicType() || T.isVolatileQualified() ||
+       T.isRestrictQualified())) {
+    Diag(NewVD->getLocation(), diag::err_constexpr_var_non_literal) << T;
+    NewVD->setInvalidDecl();
+    return;
+  }
+
   // Check that SVE types are only used in functions with SVE available.
   if (T->isSVESizelessBuiltinType() && isa<FunctionDecl>(CurContext)) {
     const FunctionDecl *FD = cast<FunctionDecl>(CurContext);
@@ -9232,6 +9240,17 @@ static FunctionDecl *CreateNewFunctionDecl(Sema &SemaRef, Declarator &D,
   FunctionDecl *NewFD = nullptr;
   bool isInline = D.getDeclSpec().isInlineSpecified();
 
+  ConstexprSpecKind ConstexprKind = D.getDeclSpec().getConstexprSpecifier();
+  if (ConstexprKind == ConstexprSpecKind::Constinit ||
+      (SemaRef.getLangOpts().C23 &&
+       ConstexprKind == ConstexprSpecKind::Constexpr)) {
+    SemaRef.Diag(D.getDeclSpec().getConstexprSpecLoc(),
+                 diag::err_constexpr_wrong_decl_kind)
+        << static_cast<int>(ConstexprKind);
+    ConstexprKind = ConstexprSpecKind::Unspecified;
+    D.getMutableDeclSpec().ClearConstexprSpec();
+  }
+
   if (!SemaRef.getLangOpts().CPlusPlus) {
     // Determine whether the function was written with a prototype. This is
     // true when:
@@ -9265,15 +9284,6 @@ static FunctionDecl *CreateNewFunctionDecl(Sema &SemaRef, Declarator &D,
   }
 
   ExplicitSpecifier ExplicitSpecifier = D.getDeclSpec().getExplicitSpecifier();
-
-  ConstexprSpecKind ConstexprKind = D.getDeclSpec().getConstexprSpecifier();
-  if (ConstexprKind == ConstexprSpecKind::Constinit) {
-    SemaRef.Diag(D.getDeclSpec().getConstexprSpecLoc(),
-                 diag::err_constexpr_wrong_decl_kind)
-        << static_cast<int>(ConstexprKind);
-    ConstexprKind = ConstexprSpecKind::Unspecified;
-    D.getMutableDeclSpec().ClearConstexprSpec();
-  }
   Expr *TrailingRequiresClause = D.getTrailingRequiresClause();
 
   SemaRef.CheckExplicitObjectMemberFunction(DC, D, Name, R);
