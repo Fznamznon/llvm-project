@@ -8600,6 +8600,27 @@ static bool checkForConflictWithNonVisibleExternC(Sema &S, const T *ND,
   return false;
 }
 
+static bool CheckConstexprVarTypeQualifiers(Sema &SemaRef,
+                                            SourceLocation VarLoc, QualType T) {
+  if (const auto *A = SemaRef.Context.getAsArrayType(T)) {
+    T = A->getElementType();
+  }
+
+  if (T->isAtomicType() || T.isVolatileQualified() || T.isRestrictQualified()) {
+    SemaRef.Diag(VarLoc, diag::err_constexpr_var_non_literal) << T;
+    return true;
+  }
+
+  if (T->isRecordType()) {
+    RecordDecl *RD = T->getAsRecordDecl();
+    for (const auto &F : RD->fields())
+      if (CheckConstexprVarTypeQualifiers(SemaRef, VarLoc, F->getType()))
+        return true;
+  }
+
+  return false;
+}
+
 void Sema::CheckVariableDeclarationType(VarDecl *NewVD) {
   // If the decl is already known invalid, don't check it.
   if (NewVD->isInvalidDecl())
@@ -8866,9 +8887,7 @@ void Sema::CheckVariableDeclarationType(VarDecl *NewVD) {
   }
 
   if (getLangOpts().C23 && NewVD->isConstexpr() &&
-      (T->isAtomicType() || T.isVolatileQualified() ||
-       T.isRestrictQualified())) {
-    Diag(NewVD->getLocation(), diag::err_constexpr_var_non_literal) << T;
+      CheckConstexprVarTypeQualifiers(*this, NewVD->getLocation(), T)) {
     NewVD->setInvalidDecl();
     return;
   }
