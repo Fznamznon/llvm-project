@@ -684,6 +684,8 @@ def err_thread_non_global : Error<
   "'%0' variables must have global storage">;
 def err_thread_unsupported : Error<
   "thread-local storage is not supported for the current target">;
+def err_c23_thread_on_constexpr : Error<
+  "thread-local storage is not allowed on constexpr variables">;
 
 // FIXME: Combine fallout warnings to just one warning.
 def warn_maybe_falloff_nonvoid_function : Warning<

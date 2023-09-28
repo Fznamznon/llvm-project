@@ -2630,7 +2630,9 @@ bool VarDecl::checkForConstantInitialization(
   // std::is_constant_evaluated()).
   assert(!Eval->WasEvaluated &&
          "already evaluated var value before checking for constant init");
-  assert(getASTContext().getLangOpts().CPlusPlus && "only meaningful in C++");
+  assert((getASTContext().getLangOpts().CPlusPlus ||
+          getASTContext().getLangOpts().C23) &&
+         "only meaningful in C++/C23");
 
   assert(!getInit()->isValueDependent());
 

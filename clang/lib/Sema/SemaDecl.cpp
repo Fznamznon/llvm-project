@@ -7889,6 +7889,14 @@ NamedDecl *Sema::ActOnVariableDeclarator(
         (getLangOpts().CPlusPlus17 ||
          Context.getTargetInfo().getCXXABI().isMicrosoft()))
       NewVD->setImplicitlyInline();
+
+    if (getLangOpts().C23) {
+      DeclSpec::TSCS TSC = D.getDeclSpec().getThreadStorageClassSpec();
+      if (TSC != TSCS_unspecified) {
+        Diag(D.getDeclSpec().getThreadStorageClassSpecLoc(),
+             diag::err_c23_thread_on_constexpr);
+      }
+    }
     break;
 
   case ConstexprSpecKind::Constinit:
@@ -14421,9 +14429,13 @@ void Sema::CheckCompleteVariableDeclaration(VarDecl *var) {
   QualType baseType = Context.getBaseElementType(type);
   bool HasConstInit = true;
 
+  if (getLangOpts().C23 && var->isConstexpr() && !Init)
+    Diag(var->getLocation(), diag::err_constexpr_var_requires_const_init)
+        << var;
+
   // Check whether the initializer is sufficiently constant.
-  if (getLangOpts().CPlusPlus && !type->isDependentType() && Init &&
-      !Init->isValueDependent() &&
+  if ((getLangOpts().CPlusPlus || getLangOpts().C23) &&
+      !type->isDependentType() && Init && !Init->isValueDependent() &&
       (GlobalStorage || var->isConstexpr() ||
        var->mightBeUsableInConstantExpressions(Context))) {
     // If this variable might have a constant initializer or might be usable in
