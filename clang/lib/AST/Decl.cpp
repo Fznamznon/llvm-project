@@ -2568,11 +2568,11 @@ APValue *VarDecl::evaluateValueImpl(SmallVectorImpl<PartialDiagnosticAt> &Notes,
   bool Result = Init->EvaluateAsInitializer(Eval->Evaluated, Ctx, this, Notes,
                                             IsConstantInitialization);
 
-  // In C++, this isn't a constant initializer if we produced notes. In that
+  // In C++/C23, this isn't a constant initializer if we produced notes. In that
   // case, we can't keep the result, because it may only be correct under the
   // assumption that the initializer is a constant context.
-  if (IsConstantInitialization && Ctx.getLangOpts().CPlusPlus &&
-      !Notes.empty())
+  if (IsConstantInitialization &&
+      (Ctx.getLangOpts().CPlusPlus || Ctx.getLangOpts().C23) && !Notes.empty())
     Result = false;
 
   // Ensure the computed APValue is cleaned up later if evaluation succeeded,
