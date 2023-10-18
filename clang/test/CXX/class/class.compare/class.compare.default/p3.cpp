@@ -2,7 +2,7 @@
 // Also covers modifications made by P2448R2 and extension warnings
 
 // RUN: %clang_cc1 -std=c++2a -verify %s
-// RUN: %clang_cc1 -std=c++2a -Wc++23-default-comp-relaxed-constexpr -verify=expected,extension %s
+// RUN: %clang_cc1 -std=c++2a -Winvalid-constexpr -verify=expected,extension %s
 
 namespace std {
   struct strong_ordering {

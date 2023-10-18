@@ -2863,8 +2863,11 @@ def warn_cxx17_compat_constexpr_local_var_no_init : Warning<
   "is incompatible with C++ standards before C++20">,
   InGroup<CXXPre20Compat>, DefaultIgnore;
 def ext_constexpr_function_never_constant_expr : ExtWarn<
-  "%select{constexpr|consteval}1 %select{function|constructor}0 never produces a "
-  "constant expression">, InGroup<DiagGroup<"invalid-constexpr">>, DefaultError;
+  "%select{constexpr|consteval}1 %select{function|constructor}0 that never produces a "
+  "constant expression is a C++23 extension">, InGroup<InvalidConstexpr>;
+def warn_cxx23_compat_constexpr_function_never_constant_expr : Warning<
+  "%select{constexpr|consteval}1 %select{function|constructor}0 that never produces a "
+  "constant expression is incompatible with C++23 standards before C++23">, InGroup<CXXPre23Compat>, DefaultIgnore;
 def err_attr_cond_never_constant_expr : Error<
   "%0 attribute expression never produces a constant expression">;
 def err_diagnose_if_invalid_diagnostic_type : Error<
@@ -9650,7 +9653,7 @@ def ext_defaulted_comparison_constexpr_mismatch : Extension<
   "declared %select{constexpr|consteval}2 but"
   "%select{|for which the corresponding implicit 'operator==' }0 "
   "invokes a non-constexpr comparison function is a C++23 extension">,
-  InGroup<DiagGroup<"c++23-default-comp-relaxed-constexpr">>;
+  InGroup<InvalidConstexpr>;
 def warn_cxx23_compat_defaulted_comparison_constexpr_mismatch : Warning<
   "defaulted definition of %select{%sub{select_defaulted_comparison_kind}1|"
   "three-way comparison operator}0 that is "
