@@ -326,7 +326,8 @@ static const Expr *IgnoreNarrowingConversion(ASTContext &Ctx,
 NarrowingKind StandardConversionSequence::getNarrowingKind(
     ASTContext &Ctx, const Expr *Converted, APValue &ConstantValue,
     QualType &ConstantType, bool IgnoreFloatToIntegralConversion) const {
-  assert(Ctx.getLangOpts().CPlusPlus && "narrowing check outside C++");
+  assert((Ctx.getLangOpts().CPlusPlus || Ctx.getLangOpts().C23) &&
+         "narrowing check outside C++");
 
   // C++11 [dcl.init.list]p7:
   //   A narrowing conversion is an implicit conversion ...
@@ -408,20 +409,32 @@ NarrowingKind StandardConversionSequence::getNarrowingKind(
       if (Initializer->isValueDependent())
         return NK_Dependent_Narrowing;
 
-      if (Initializer->isCXX11ConstantExpr(Ctx, &ConstantValue)) {
+      if (ConstantValue.hasValue() ||
+          (!ConstantValue.hasValue() &&
+           Initializer->isCXX11ConstantExpr(Ctx, &ConstantValue))) {
         // Constant!
         assert(ConstantValue.isFloat());
         llvm::APFloat FloatVal = ConstantValue.getFloat();
         // Convert the source value into the target type.
         bool ignored;
-        llvm::APFloat::opStatus ConvertStatus = FloatVal.convert(
+        llvm::APFloat Converted = FloatVal;
+        llvm::APFloat::opStatus ConvertStatus = Converted.convert(
           Ctx.getFloatTypeSemantics(ToType),
           llvm::APFloat::rmNearestTiesToEven, &ignored);
-        // If there was no overflow, the source value is within the range of
-        // values that can be represented.
-        if (ConvertStatus & llvm::APFloat::opOverflow) {
-          ConstantType = Initializer->getType();
-          return NK_Constant_Narrowing;
+        Converted.convert(Ctx.getFloatTypeSemantics(FromType),
+                          llvm::APFloat::rmNearestTiesToEven, &ignored);
+        if (Ctx.getLangOpts().C23) {
+          if (!Converted.bitwiseIsEqual(FloatVal)) {
+            ConstantType = Initializer->getType();
+            return NK_Constant_Narrowing;
+          }
+        } else {
+          // If there was no overflow, the source value is within the range of
+          // values that can be represented.
+          if (ConvertStatus & llvm::APFloat::opOverflow) {
+            ConstantType = Initializer->getType();
+            return NK_Constant_Narrowing;
+          }
         }
       } else {
         return NK_Variable_Narrowing;

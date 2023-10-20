@@ -13566,9 +13566,10 @@ void Sema::AddInitializerToDecl(Decl *RealDecl, Expr *Init, bool DirectInit) {
     if (VDecl->isInvalidDecl())
       return;
 
-    InitializationSequence InitSeq(*this, Entity, Kind, Args,
-                                   /*TopLevelOfInitList=*/false,
-                                   /*TreatUnavailableAsInvalid=*/false);
+    InitializationSequence InitSeq(
+        *this, Entity, Kind, Args,
+        /*TopLevelOfInitList=*/(LangOpts.C23 && VDecl->isConstexpr()),
+        /*TreatUnavailableAsInvalid=*/false);
     ExprResult Result = InitSeq.Perform(*this, Entity, Kind, Args, &DclT);
     if (Result.isInvalid()) {
       // If the provided initializer fails to initialize the var decl,
@@ -14272,6 +14273,89 @@ StmtResult Sema::ActOnCXXForRangeIdentifier(Scope *S, SourceLocation IdentLoc,
                        Attrs.Range.getEnd().isValid() ? Attrs.Range.getEnd()
                                                       : IdentLoc);
 }
+static ImplicitConversionKind castKindToImplicitConversionKind(CastKind CK) {
+  switch (CK) {
+  default: {
+#ifndef NDEBUG
+    llvm::errs() << "unhandled cast kind: " << CastExpr::getCastKindName(CK)
+                 << "\n";
+#endif
+    llvm_unreachable("unhandled cast kind");
+  }
+  case CK_UserDefinedConversion:
+    return ICK_Identity;
+  case CK_LValueToRValue:
+    return ICK_Lvalue_To_Rvalue;
+  case CK_ArrayToPointerDecay:
+    return ICK_Array_To_Pointer;
+  case CK_FunctionToPointerDecay:
+    return ICK_Function_To_Pointer;
+  case CK_IntegralCast:
+    return ICK_Integral_Conversion;
+  case CK_FloatingCast:
+    return ICK_Floating_Conversion;
+  case CK_IntegralToFloating:
+  case CK_FloatingToIntegral:
+    return ICK_Floating_Integral;
+  case CK_IntegralComplexCast:
+  case CK_FloatingComplexCast:
+  case CK_FloatingComplexToIntegralComplex:
+  case CK_IntegralComplexToFloatingComplex:
+    return ICK_Complex_Conversion;
+  case CK_FloatingComplexToReal:
+  case CK_FloatingRealToComplex:
+  case CK_IntegralComplexToReal:
+  case CK_IntegralRealToComplex:
+    return ICK_Complex_Real;
+  }
+}
+
+static bool checkC23ConstexprInitializer(Sema &S, APValue &Value,
+                                         ASTContext &Ctx, Expr *Init,
+                                         VarDecl *VD) {
+  Expr *InitNoCast = Init->IgnoreImpCasts();
+  if (VD->getType() == Init->getType())
+    return false;
+
+  StandardConversionSequence SCS;
+  SCS.setAsIdentityConversion();
+  auto FromType = InitNoCast->getType();
+  auto ToType = Init->getType();
+  SCS.setToType(0, FromType);
+  SCS.setToType(1, ToType);
+  if (const auto *ICE = dyn_cast<ImplicitCastExpr>(Init))
+    SCS.Second = castKindToImplicitConversionKind(ICE->getCastKind());
+
+  APValue PreNarrowingValue;
+  QualType PreNarrowingType;
+  switch (SCS.getNarrowingKind(Ctx, Init, Value, PreNarrowingType,
+                               /*IgnoreFloatToIntegralConversion*/ true)) {
+  case NK_Dependent_Narrowing:
+    // Implicit conversion to a narrower type, but the expression is
+    // value-dependent so we can't tell whether it's actually narrowing.
+  case NK_Not_Narrowing:
+    return false;
+
+  case NK_Constant_Narrowing:
+    // Implicit conversion to a narrower type, and the value is not a constant
+    // expression.
+    S.Diag(VD->getBeginLoc(), diag::err_spaceship_argument_narrowing)
+        << /*Constant*/ 1
+        << Value.getAsString(S.Context, PreNarrowingType) << ToType;
+    return true;
+
+  case NK_Variable_Narrowing:
+    // Implicit conversion to a narrower type, and the value is not a constant
+    // expression.
+  case NK_Type_Narrowing:
+    S.Diag(VD->getBeginLoc(), diag::err_spaceship_argument_narrowing)
+        << /*Constant*/ 0 << FromType << ToType;
+    // TODO: It's not a constant expression, but what if the user intended it
+    // to be? Can we produce notes to help them figure out why it isn't?
+    return true;
+  }
+  llvm_unreachable("unhandled case in switch");
+}
 
 void Sema::CheckCompleteVariableDeclaration(VarDecl *var) {
   if (var->isInvalidDecl()) return;
@@ -14469,6 +14553,10 @@ void Sema::CheckCompleteVariableDeclaration(VarDecl *var) {
 
     if (HasConstInit) {
       // FIXME: Consider replacing the initializer with a ConstantExpr.
+      if (getLangOpts().C23 && var->isConstexpr()) {
+        APValue *Value = var->evaluateValue();
+        checkC23ConstexprInitializer(*this, *Value, getASTContext(), Init, var);
+      }
     } else if (var->isConstexpr()) {
       SourceLocation DiagLoc = var->getLocation();
       // If the note doesn't add any useful information other than a source
