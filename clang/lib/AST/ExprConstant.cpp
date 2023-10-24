@@ -2230,6 +2230,16 @@ static bool CheckLValueConstantExpression(EvalInfo &Info, SourceLocation Loc,
     return false;
   }
 
+  if (Info.getLangOpts().C23) {
+    auto *VarD = dyn_cast_or_null<VarDecl>(BaseVD);
+    if (VarD && VarD->isConstexpr() && !LVal.isNullPointer()) {
+      Info.FFDiag(Loc, diag::note_constexpr_non_global, 1)
+          << IsReferenceType << !Designator.Entries.empty() << !!BaseVD
+          << BaseVD;
+      return false;
+    }
+  }
+
   // Check that the object is a global. Note that the fake 'this' object we
   // manufacture when checking potential constant expressions is conservatively
   // assumed to be global here.

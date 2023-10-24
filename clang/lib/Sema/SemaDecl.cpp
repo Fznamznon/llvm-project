@@ -14310,13 +14310,9 @@ static ImplicitConversionKind castKindToImplicitConversionKind(CastKind CK) {
   }
 }
 
-static bool checkC23ConstexprInitializer(Sema &S, APValue &Value,
-                                         ASTContext &Ctx, Expr *Init,
-                                         VarDecl *VD) {
+static bool checkConversion(Sema &S, APValue &Value, ASTContext &Ctx,
+                            Expr *Init, VarDecl *VD) {
   Expr *InitNoCast = Init->IgnoreImpCasts();
-  if (VD->getType() == Init->getType())
-    return false;
-
   StandardConversionSequence SCS;
   SCS.setAsIdentityConversion();
   auto FromType = InitNoCast->getType();
@@ -14329,7 +14325,7 @@ static bool checkC23ConstexprInitializer(Sema &S, APValue &Value,
   APValue PreNarrowingValue;
   QualType PreNarrowingType;
   switch (SCS.getNarrowingKind(Ctx, Init, Value, PreNarrowingType,
-                               /*IgnoreFloatToIntegralConversion*/ true)) {
+                               /*IgnoreFloatToIntegralConversion*/ false)) {
   case NK_Dependent_Narrowing:
     // Implicit conversion to a narrower type, but the expression is
     // value-dependent so we can't tell whether it's actually narrowing.
@@ -14339,9 +14335,9 @@ static bool checkC23ConstexprInitializer(Sema &S, APValue &Value,
   case NK_Constant_Narrowing:
     // Implicit conversion to a narrower type, and the value is not a constant
     // expression.
-    S.Diag(VD->getBeginLoc(), diag::err_spaceship_argument_narrowing)
-        << /*Constant*/ 1
-        << Value.getAsString(S.Context, PreNarrowingType) << ToType;
+    S.Diag(Init->getBeginLoc(), diag::err_spaceship_argument_narrowing)
+        << /*Constant*/ 1 << Value.getAsString(S.Context, PreNarrowingType)
+        << ToType;
     return true;
 
   case NK_Variable_Narrowing:
@@ -14355,6 +14351,27 @@ static bool checkC23ConstexprInitializer(Sema &S, APValue &Value,
     return true;
   }
   llvm_unreachable("unhandled case in switch");
+}
+
+static bool checkC23ConstexprInitializer(Sema &S, APValue &Value,
+                                         ASTContext &Ctx, Expr *Init,
+                                         VarDecl *VD) {
+  Expr *InitNoCast = Init->IgnoreImpCasts();
+  if (VD->getType() != InitNoCast->getType())
+    if (checkConversion(S, Value, Ctx, Init, VD))
+      return true;
+
+  for (Stmt *SubStmt : Init->children()) {
+    Expr *ChildExpr = dyn_cast_or_null<Expr>(SubStmt);
+    if (!ChildExpr)
+      continue;
+
+    // WorkList.push_back({ChildExpr, CC, IsListInit});
+    if (checkC23ConstexprInitializer(S, Value, Ctx, ChildExpr, VD)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 void Sema::CheckCompleteVariableDeclaration(VarDecl *var) {

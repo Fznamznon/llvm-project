@@ -409,10 +409,13 @@ NarrowingKind StandardConversionSequence::getNarrowingKind(
       if (Initializer->isValueDependent())
         return NK_Dependent_Narrowing;
 
-      if (ConstantValue.hasValue() ||
-          (!ConstantValue.hasValue() &&
-           Initializer->isCXX11ConstantExpr(Ctx, &ConstantValue))) {
+      Expr::EvalResult R;
+      if ((Ctx.getLangOpts().C23 &&
+           Initializer->EvaluateAsRValue(R, Ctx)) ||
+          Initializer->isCXX11ConstantExpr(Ctx, &ConstantValue)) {
         // Constant!
+        if (Ctx.getLangOpts().C23)
+          ConstantValue = R.Val;
         assert(ConstantValue.isFloat());
         llvm::APFloat FloatVal = ConstantValue.getFloat();
         // Convert the source value into the target type.
