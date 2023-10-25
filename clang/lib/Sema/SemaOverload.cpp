@@ -504,6 +504,10 @@ NarrowingKind StandardConversionSequence::getNarrowingKind(
     }
     return NK_Not_Narrowing;
   }
+  case ICK_Complex_Real:
+    // In C++ that would be diagnosed earlier.
+    assert(Ctx.getLangOpts().C23);
+    return NK_Type_Narrowing;
 
   default:
     // Other kinds of conversions are not narrowings.

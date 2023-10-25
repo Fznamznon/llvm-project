@@ -684,8 +684,6 @@ def err_thread_non_global : Error<
   "'%0' variables must have global storage">;
 def err_thread_unsupported : Error<
   "thread-local storage is not supported for the current target">;
-def err_c23_thread_on_constexpr : Error<
-  "thread-local storage is not allowed on constexpr variables">;
 
 // FIXME: Combine fallout warnings to just one warning.
 def warn_maybe_falloff_nonvoid_function : Warning<
@@ -2933,6 +2931,21 @@ def warn_private_extern : Warning<
   "private to the linkage unit and is deprecated">, InGroup<PrivateExtern>;
 def note_private_extern : Note<
   "use __attribute__((visibility(\"hidden\"))) attribute instead">;
+
+// C23 constexpr
+def err_c23_thread_local_constexpr : Error<
+  "thread-local storage is not allowed with constexpr">;
+def err_c23_extern_constexpr : Error<
+  "extern specifier is not allowed with constexpr">;
+def err_c23_constexpr_not_variable : Error<
+  "constexpr is only allowed in variable declarations">;
+def err_c23_constexpr_invalid_type : Error<
+  "constexpr variable cannot have type %0">;
+def err_c23_constexpr_init_not_representable : Error<
+  "constexpr initializer evaluates to %0 which is not exactly representable in type %1">;
+def err_c23_constexpr_init_type_mismatch : Error<
+  "constexpr initializer for type %0 is of type %1">;
+
 
 // C++ Concepts
 def err_concept_decls_may_only_appear_in_global_namespace_scope : Error<

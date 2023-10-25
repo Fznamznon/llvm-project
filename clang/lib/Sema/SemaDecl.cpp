@@ -7894,8 +7894,11 @@ NamedDecl *Sema::ActOnVariableDeclarator(
       DeclSpec::TSCS TSC = D.getDeclSpec().getThreadStorageClassSpec();
       if (TSC != TSCS_unspecified) {
         Diag(D.getDeclSpec().getThreadStorageClassSpecLoc(),
-             diag::err_c23_thread_on_constexpr);
+             diag::err_c23_thread_local_constexpr);
       }
+      if (NewVD->hasExternalStorage())
+        Diag(D.getDeclSpec().getThreadStorageClassSpecLoc(),
+             diag::err_c23_extern_constexpr);
     }
     break;
 
@@ -8608,21 +8611,21 @@ static bool checkForConflictWithNonVisibleExternC(Sema &S, const T *ND,
   return false;
 }
 
-static bool CheckConstexprVarTypeQualifiers(Sema &SemaRef,
+static bool CheckC23ConstexprVarTypeQualifiers(Sema &SemaRef,
                                             SourceLocation VarLoc, QualType T) {
   if (const auto *A = SemaRef.Context.getAsArrayType(T)) {
     T = A->getElementType();
   }
 
   if (T->isAtomicType() || T.isVolatileQualified() || T.isRestrictQualified()) {
-    SemaRef.Diag(VarLoc, diag::err_constexpr_var_non_literal) << T;
+    SemaRef.Diag(VarLoc, diag::err_c23_constexpr_invalid_type) << T;
     return true;
   }
 
   if (T->isRecordType()) {
     RecordDecl *RD = T->getAsRecordDecl();
     for (const auto &F : RD->fields())
-      if (CheckConstexprVarTypeQualifiers(SemaRef, VarLoc, F->getType()))
+      if (CheckC23ConstexprVarTypeQualifiers(SemaRef, VarLoc, F->getType()))
         return true;
   }
 
@@ -8895,7 +8898,7 @@ void Sema::CheckVariableDeclarationType(VarDecl *NewVD) {
   }
 
   if (getLangOpts().C23 && NewVD->isConstexpr() &&
-      CheckConstexprVarTypeQualifiers(*this, NewVD->getLocation(), T)) {
+      CheckC23ConstexprVarTypeQualifiers(*this, NewVD->getLocation(), T)) {
     NewVD->setInvalidDecl();
     return;
   }
@@ -9271,9 +9274,14 @@ static FunctionDecl *CreateNewFunctionDecl(Sema &SemaRef, Declarator &D,
   if (ConstexprKind == ConstexprSpecKind::Constinit ||
       (SemaRef.getLangOpts().C23 &&
        ConstexprKind == ConstexprSpecKind::Constexpr)) {
-    SemaRef.Diag(D.getDeclSpec().getConstexprSpecLoc(),
-                 diag::err_constexpr_wrong_decl_kind)
-        << static_cast<int>(ConstexprKind);
+
+    if (SemaRef.getLangOpts().C23)
+      SemaRef.Diag(D.getDeclSpec().getConstexprSpecLoc(),
+                   diag::err_c23_constexpr_not_variable);
+    else
+      SemaRef.Diag(D.getDeclSpec().getConstexprSpecLoc(),
+                   diag::err_constexpr_wrong_decl_kind)
+          << static_cast<int>(ConstexprKind);
     ConstexprKind = ConstexprSpecKind::Unspecified;
     D.getMutableDeclSpec().ClearConstexprSpec();
   }
@@ -13566,10 +13574,9 @@ void Sema::AddInitializerToDecl(Decl *RealDecl, Expr *Init, bool DirectInit) {
     if (VDecl->isInvalidDecl())
       return;
 
-    InitializationSequence InitSeq(
-        *this, Entity, Kind, Args,
-        /*TopLevelOfInitList=*/(LangOpts.C23 && VDecl->isConstexpr()),
-        /*TreatUnavailableAsInvalid=*/false);
+    InitializationSequence InitSeq(*this, Entity, Kind, Args,
+                                   /*TopLevelOfInitList=*/false,
+                                   /*TreatUnavailableAsInvalid=*/false);
     ExprResult Result = InitSeq.Perform(*this, Entity, Kind, Args, &DclT);
     if (Result.isInvalid()) {
       // If the provided initializer fails to initialize the var decl,
@@ -14310,9 +14317,8 @@ static ImplicitConversionKind castKindToImplicitConversionKind(CastKind CK) {
   }
 }
 
-static bool checkConversion(Sema &S, APValue &Value, ASTContext &Ctx,
-                            Expr *Init, VarDecl *VD) {
-  Expr *InitNoCast = Init->IgnoreImpCasts();
+static bool checkConversion(Sema &S, ASTContext &Ctx, const Expr *Init) {
+  const Expr *InitNoCast = Init->IgnoreImpCasts();
   StandardConversionSequence SCS;
   SCS.setAsIdentityConversion();
   auto FromType = InitNoCast->getType();
@@ -14322,7 +14328,7 @@ static bool checkConversion(Sema &S, APValue &Value, ASTContext &Ctx,
   if (const auto *ICE = dyn_cast<ImplicitCastExpr>(Init))
     SCS.Second = castKindToImplicitConversionKind(ICE->getCastKind());
 
-  APValue PreNarrowingValue;
+  APValue Value;
   QualType PreNarrowingType;
   switch (SCS.getNarrowingKind(Ctx, Init, Value, PreNarrowingType,
                                /*IgnoreFloatToIntegralConversion*/ false)) {
@@ -14335,39 +14341,34 @@ static bool checkConversion(Sema &S, APValue &Value, ASTContext &Ctx,
   case NK_Constant_Narrowing:
     // Implicit conversion to a narrower type, and the value is not a constant
     // expression.
-    S.Diag(Init->getBeginLoc(), diag::err_spaceship_argument_narrowing)
-        << /*Constant*/ 1 << Value.getAsString(S.Context, PreNarrowingType)
-        << ToType;
+    S.Diag(Init->getBeginLoc(), diag::err_c23_constexpr_init_not_representable)
+        << Value.getAsString(S.Context, PreNarrowingType) << ToType;
     return true;
 
   case NK_Variable_Narrowing:
     // Implicit conversion to a narrower type, and the value is not a constant
     // expression.
   case NK_Type_Narrowing:
-    S.Diag(VD->getBeginLoc(), diag::err_spaceship_argument_narrowing)
-        << /*Constant*/ 0 << FromType << ToType;
-    // TODO: It's not a constant expression, but what if the user intended it
-    // to be? Can we produce notes to help them figure out why it isn't?
+    S.Diag(Init->getBeginLoc(), diag::err_c23_constexpr_init_type_mismatch)
+        << ToType << FromType;
     return true;
   }
   llvm_unreachable("unhandled case in switch");
 }
 
-static bool checkC23ConstexprInitializer(Sema &S, APValue &Value,
-                                         ASTContext &Ctx, Expr *Init,
-                                         VarDecl *VD) {
-  Expr *InitNoCast = Init->IgnoreImpCasts();
-  if (VD->getType() != InitNoCast->getType())
-    if (checkConversion(S, Value, Ctx, Init, VD))
+static bool checkC23ConstexprInitializer(Sema &S, ASTContext &Ctx,
+                                         const Expr *Init) {
+  const Expr *InitNoCast = Init->IgnoreImpCasts();
+  if (Init->getType() != InitNoCast->getType())
+    if (checkConversion(S, Ctx, Init))
       return true;
 
-  for (Stmt *SubStmt : Init->children()) {
-    Expr *ChildExpr = dyn_cast_or_null<Expr>(SubStmt);
+  for (const Stmt *SubStmt : Init->children()) {
+    const Expr *ChildExpr = dyn_cast_or_null<const Expr>(SubStmt);
     if (!ChildExpr)
       continue;
 
-    // WorkList.push_back({ChildExpr, CC, IsListInit});
-    if (checkC23ConstexprInitializer(S, Value, Ctx, ChildExpr, VD)) {
+    if (checkC23ConstexprInitializer(S, Ctx, ChildExpr)) {
       return true;
     }
   }
@@ -14570,10 +14571,8 @@ void Sema::CheckCompleteVariableDeclaration(VarDecl *var) {
 
     if (HasConstInit) {
       // FIXME: Consider replacing the initializer with a ConstantExpr.
-      if (getLangOpts().C23 && var->isConstexpr()) {
-        APValue *Value = var->evaluateValue();
-        checkC23ConstexprInitializer(*this, *Value, getASTContext(), Init, var);
-      }
+      if (getLangOpts().C23 && var->isConstexpr())
+        checkC23ConstexprInitializer(*this, getASTContext(), Init);
     } else if (var->isConstexpr()) {
       SourceLocation DiagLoc = var->getLocation();
       // If the note doesn't add any useful information other than a source
