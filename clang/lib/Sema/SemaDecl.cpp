@@ -5147,13 +5147,17 @@ Decl *Sema::ParsedFreeStandingDeclSpec(Scope *S, AccessSpecifier AS,
     // and definitions of functions and variables.
     // C++2a [dcl.constexpr]p1: The consteval specifier shall be applied only to
     // the declaration of a function or function template
-    if (Tag)
+    if (Tag) {
       Diag(DS.getConstexprSpecLoc(), diag::err_constexpr_tag)
           << GetDiagnosticTypeSpecifierID(DS)
           << static_cast<int>(DS.getConstexprSpecifier());
-    else
-      Diag(DS.getConstexprSpecLoc(), diag::err_constexpr_wrong_decl_kind)
-          << static_cast<int>(DS.getConstexprSpecifier());
+    } else {
+      if (getLangOpts().C23)
+        Diag(DS.getConstexprSpecLoc(), diag::err_c23_constexpr_not_variable);
+      else
+        Diag(DS.getConstexprSpecLoc(), diag::err_constexpr_wrong_decl_kind)
+            << static_cast<int>(DS.getConstexprSpecifier());
+    }
     // Don't emit warnings after this error.
     return TagD;
   }
@@ -14290,6 +14294,8 @@ static ImplicitConversionKind castKindToImplicitConversionKind(CastKind CK) {
     llvm_unreachable("unhandled cast kind");
   }
   case CK_UserDefinedConversion:
+  case CK_NullToPointer:
+  case CK_BitCast:
     return ICK_Identity;
   case CK_LValueToRValue:
     return ICK_Lvalue_To_Rvalue;
@@ -14356,11 +14362,35 @@ static bool checkConversion(Sema &S, ASTContext &Ctx, const Expr *Init) {
   llvm_unreachable("unhandled case in switch");
 }
 
+static bool checkStringLiteral(const StringLiteral *SE, Sema &SemaRef,
+                               SourceLocation Loc) {
+  const ConstantArrayType *CAT =
+      SemaRef.Context.getAsConstantArrayType(SE->getType());
+  QualType CharType = CAT->getElementType();
+  uint32_t BitWidth = SemaRef.Context.getTypeSize(CharType);
+  bool isUnsigned = CharType->isUnsignedIntegerType();
+  llvm::APSInt Value(BitWidth, isUnsigned);
+  const StringRef S = SE->getBytes();
+  for (unsigned I = 0, N = SE->getLength(); I != N; ++I) {
+    Value = S[I];
+    if (Value != S[I]) {
+      SemaRef.Diag(Loc, diag::err_c23_constexpr_init_not_representable)
+          << S[I] << CharType;
+      return true;
+    }
+  }
+  return false;
+}
+
 static bool checkC23ConstexprInitializer(Sema &S, ASTContext &Ctx,
                                          const Expr *Init) {
   const Expr *InitNoCast = Init->IgnoreImpCasts();
   if (Init->getType() != InitNoCast->getType())
     if (checkConversion(S, Ctx, Init))
+      return true;
+
+  if (auto *SE = dyn_cast<StringLiteral>(Init))
+    if (checkStringLiteral(SE, S, Init->getBeginLoc()))
       return true;
 
   for (const Stmt *SubStmt : Init->children()) {
