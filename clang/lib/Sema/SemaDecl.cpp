@@ -13830,6 +13830,7 @@ void Sema::AddInitializerToDecl(Decl *RealDecl, Expr *Init, bool DirectInit) {
       VDecl->setStorageClass(SC_Extern);
 
     // C99 6.7.8p4. All file scoped initializers need to be constant.
+    // Avoid double diagnosing for constexpr variables.
     if (!getLangOpts().CPlusPlus && !VDecl->isInvalidDecl() &&
         !VDecl->isConstexpr())
       CheckForConstantInitializer(Init, DclT);
@@ -14323,7 +14324,8 @@ static ImplicitConversionKind castKindToImplicitConversionKind(CastKind CK) {
   }
 }
 
-static bool checkConversion(Sema &S, ASTContext &Ctx, const Expr *Init) {
+static bool checkC23ConstexprInitConversion(Sema &S, const Expr *Init) {
+  assert(S.getLangOpts().C23);
   const Expr *InitNoCast = Init->IgnoreImpCasts();
   StandardConversionSequence SCS;
   SCS.setAsIdentityConversion();
@@ -14336,34 +14338,39 @@ static bool checkConversion(Sema &S, ASTContext &Ctx, const Expr *Init) {
 
   APValue Value;
   QualType PreNarrowingType;
-  switch (SCS.getNarrowingKind(Ctx, Init, Value, PreNarrowingType,
+  // Reuse C++ narrowing check.
+  switch (SCS.getNarrowingKind(S.Context, Init, Value, PreNarrowingType,
                                /*IgnoreFloatToIntegralConversion*/ false)) {
-  case NK_Dependent_Narrowing:
-    // Implicit conversion to a narrower type, but the expression is
-    // value-dependent so we can't tell whether it's actually narrowing.
-  case NK_Not_Narrowing:
-    return false;
-
+  // The value doesn't fit.
   case NK_Constant_Narrowing:
-    // Implicit conversion to a narrower type, and the value is not a constant
-    // expression.
     S.Diag(Init->getBeginLoc(), diag::err_c23_constexpr_init_not_representable)
         << Value.getAsString(S.Context, PreNarrowingType) << ToType;
     return true;
 
-  case NK_Variable_Narrowing:
-    // Implicit conversion to a narrower type, and the value is not a constant
-    // expression.
+  // Conversion to a narrower type.
   case NK_Type_Narrowing:
     S.Diag(Init->getBeginLoc(), diag::err_c23_constexpr_init_type_mismatch)
         << ToType << FromType;
     return true;
+
+  // Since we only reuse narrowing check for C23 constexpr variables here, we're
+  // not really interested in these cases.
+  case NK_Dependent_Narrowing:
+  case NK_Variable_Narrowing:
+  case NK_Not_Narrowing:
+    return false;
+
   }
   llvm_unreachable("unhandled case in switch");
 }
 
-static bool checkStringLiteral(const StringLiteral *SE, Sema &SemaRef,
-                               SourceLocation Loc) {
+static bool checkC23ConstexprInitStringLiteral(const StringLiteral *SE,
+                                               Sema &SemaRef,
+                                               SourceLocation Loc) {
+  assert(SemaRef.getLangOpts().C23);
+  // String literals have the target type attached but underneath may contain
+  // values that don't really fit into the target type. Check that every
+  // character fits.
   const ConstantArrayType *CAT =
       SemaRef.Context.getAsConstantArrayType(SE->getType());
   QualType CharType = CAT->getElementType();
@@ -14382,15 +14389,14 @@ static bool checkStringLiteral(const StringLiteral *SE, Sema &SemaRef,
   return false;
 }
 
-static bool checkC23ConstexprInitializer(Sema &S, ASTContext &Ctx,
-                                         const Expr *Init) {
+static bool checkC23ConstexprInitializer(Sema &S, const Expr *Init) {
   const Expr *InitNoCast = Init->IgnoreImpCasts();
   if (Init->getType() != InitNoCast->getType())
-    if (checkConversion(S, Ctx, Init))
+    if (checkC23ConstexprInitConversion(S, Init))
       return true;
 
   if (auto *SE = dyn_cast<StringLiteral>(Init))
-    if (checkStringLiteral(SE, S, Init->getBeginLoc()))
+    if (checkC23ConstexprInitStringLiteral(SE, S, Init->getBeginLoc()))
       return true;
 
   for (const Stmt *SubStmt : Init->children()) {
@@ -14398,7 +14404,7 @@ static bool checkC23ConstexprInitializer(Sema &S, ASTContext &Ctx,
     if (!ChildExpr)
       continue;
 
-    if (checkC23ConstexprInitializer(S, Ctx, ChildExpr)) {
+    if (checkC23ConstexprInitializer(S, ChildExpr)) {
       return true;
     }
   }
@@ -14602,7 +14608,7 @@ void Sema::CheckCompleteVariableDeclaration(VarDecl *var) {
     if (HasConstInit) {
       // FIXME: Consider replacing the initializer with a ConstantExpr.
       if (getLangOpts().C23 && var->isConstexpr())
-        checkC23ConstexprInitializer(*this, getASTContext(), Init);
+        checkC23ConstexprInitializer(*this, Init);
     } else if (var->isConstexpr()) {
       SourceLocation DiagLoc = var->getLocation();
       // If the note doesn't add any useful information other than a source

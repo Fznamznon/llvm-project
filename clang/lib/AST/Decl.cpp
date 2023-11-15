@@ -2461,7 +2461,7 @@ bool VarDecl::mightBeUsableInConstantExpressions(const ASTContext &C) const {
 
   // OpenCL permits const integral variables to be used in constant
   // expressions, like in C++98.
-  if (!Lang.CPlusPlus && !Lang.OpenCL)
+  if (!Lang.CPlusPlus && !Lang.OpenCL && !Lang.C23)
     return false;
 
   // Function parameters are never usable in constant expressions.
@@ -2485,12 +2485,12 @@ bool VarDecl::mightBeUsableInConstantExpressions(const ASTContext &C) const {
 
   // In C++, const, non-volatile variables of integral or enumeration types
   // can be used in constant expressions.
-  if (getType()->isIntegralOrEnumerationType())
+  if (getType()->isIntegralOrEnumerationType() && !Lang.C23)
     return true;
 
   // Additionally, in C++11, non-volatile constexpr variables can be used in
   // constant expressions.
-  return Lang.CPlusPlus11 && isConstexpr();
+  return (Lang.CPlusPlus11 || Lang.C23) && isConstexpr();
 }
 
 bool VarDecl::isUsableInConstantExpressions(const ASTContext &Context) const {
