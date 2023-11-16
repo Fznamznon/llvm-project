@@ -505,7 +505,7 @@ NarrowingKind StandardConversionSequence::getNarrowingKind(
     return NK_Not_Narrowing;
   }
   case ICK_Complex_Real:
-    if (FromType->isRealFloatingType() && ToType->isComplexType())
+    if (FromType->isComplexType() && !ToType->isComplexType())
       return NK_Type_Narrowing;
     return NK_Not_Narrowing;
 

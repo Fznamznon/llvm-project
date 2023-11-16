@@ -2945,7 +2945,8 @@ def err_c23_constexpr_init_not_representable : Error<
   "constexpr initializer evaluates to %0 which is not exactly representable in type %1">;
 def err_c23_constexpr_init_type_mismatch : Error<
   "constexpr initializer for type %0 is of type %1">;
-
+def err_c23_constexpr_pointer_not_null : Error<
+  "constexpr pointer initializer is not null">;
 
 // C++ Concepts
 def err_concept_decls_may_only_appear_in_global_namespace_scope : Error<

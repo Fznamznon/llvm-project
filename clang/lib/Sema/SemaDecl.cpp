@@ -8888,7 +8888,9 @@ void Sema::CheckVariableDeclarationType(VarDecl *NewVD) {
 
   if (NewVD->isConstexpr() && !T->isDependentType() &&
       RequireLiteralType(NewVD->getLocation(), T,
-                         diag::err_constexpr_var_non_literal)) {
+                         getLangOpts().C23
+                             ? diag::err_c23_constexpr_invalid_type
+                             : diag::err_constexpr_var_non_literal)) {
     NewVD->setInvalidDecl();
     return;
   }
@@ -14285,43 +14287,28 @@ StmtResult Sema::ActOnCXXForRangeIdentifier(Scope *S, SourceLocation IdentLoc,
                        Attrs.Range.getEnd().isValid() ? Attrs.Range.getEnd()
                                                       : IdentLoc);
 }
-static ImplicitConversionKind castKindToImplicitConversionKind(CastKind CK) {
-  switch (CK) {
-  default: {
-#ifndef NDEBUG
-    llvm::errs() << "unhandled cast kind: " << CastExpr::getCastKindName(CK)
-                 << "\n";
-#endif
-    llvm_unreachable("unhandled cast kind");
+
+static ImplicitConversionKind getConversionKind(QualType FromType,
+                                                QualType ToType) {
+  if (ToType->isIntegerType()) {
+    if (FromType->isComplexType())
+     return ICK_Complex_Real;
+    if (FromType->isFloatingType())
+     return ICK_Floating_Integral;
+    if (FromType->isIntegerType())
+     return ICK_Integral_Conversion;
   }
-  case CK_UserDefinedConversion:
-  case CK_NullToPointer:
-  case CK_BitCast:
-    return ICK_Identity;
-  case CK_LValueToRValue:
-    return ICK_Lvalue_To_Rvalue;
-  case CK_ArrayToPointerDecay:
-    return ICK_Array_To_Pointer;
-  case CK_FunctionToPointerDecay:
-    return ICK_Function_To_Pointer;
-  case CK_IntegralCast:
-    return ICK_Integral_Conversion;
-  case CK_FloatingCast:
-    return ICK_Floating_Conversion;
-  case CK_IntegralToFloating:
-  case CK_FloatingToIntegral:
-    return ICK_Floating_Integral;
-  case CK_IntegralComplexCast:
-  case CK_FloatingComplexCast:
-  case CK_FloatingComplexToIntegralComplex:
-  case CK_IntegralComplexToFloatingComplex:
-    return ICK_Complex_Conversion;
-  case CK_FloatingComplexToReal:
-  case CK_FloatingRealToComplex:
-  case CK_IntegralComplexToReal:
-  case CK_IntegralRealToComplex:
-    return ICK_Complex_Real;
+
+  if (ToType->isFloatingType()) {
+    if (FromType->isComplexType())
+     return ICK_Complex_Real;
+    if (FromType->isFloatingType())
+     return ICK_Floating_Conversion;
+    if (FromType->isIntegerType())
+     return ICK_Floating_Integral;
   }
+
+  return ICK_Identity;
 }
 
 static bool checkC23ConstexprInitConversion(Sema &S, const Expr *Init) {
@@ -14333,8 +14320,7 @@ static bool checkC23ConstexprInitConversion(Sema &S, const Expr *Init) {
   auto ToType = Init->getType();
   SCS.setToType(0, FromType);
   SCS.setToType(1, ToType);
-  if (const auto *ICE = dyn_cast<ImplicitCastExpr>(Init))
-    SCS.Second = castKindToImplicitConversionKind(ICE->getCastKind());
+  SCS.Second = getConversionKind(FromType, ToType);
 
   APValue Value;
   QualType PreNarrowingType;
