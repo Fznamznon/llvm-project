@@ -247,10 +247,10 @@ struct ConstexprBaseMemberCtors : Literal {
   Literal l;
 
   constexpr ConstexprBaseMemberCtors() : Literal(), l() {} // ok
-  constexpr ConstexprBaseMemberCtors(char) : // expected-error {{constexpr constructor never produces a constant expression}}
+  constexpr ConstexprBaseMemberCtors(char) : // expected-error {{constexpr constructor that never produces a constant expression is a C++23 extension}}
     Literal(0), // expected-note {{non-constexpr constructor}}
     l() {}
-  constexpr ConstexprBaseMemberCtors(double) : Literal(), // expected-error {{constexpr constructor never produces a constant expression}}
+  constexpr ConstexprBaseMemberCtors(double) : Literal(), // expected-error {{constexpr constructor that never produces a constant expression is a C++23 extension}}
     l(0) // expected-note {{non-constexpr constructor}}
   {}
 };
@@ -306,7 +306,7 @@ static_assert(XU4().a == 1, "");
 int kGlobal; // expected-note {{here}}
 struct Z {
   constexpr Z(int a) : n(a) {}
-  constexpr Z() : n(kGlobal) {} // expected-error {{constexpr constructor never produces a constant expression}} expected-note {{read of non-const}}
+  constexpr Z() : n(kGlobal) {} // expected-error {{constexpr constructor that never produces a constant expression is a C++23 extension}} expected-note {{read of non-const}}
   int n;
 };
 

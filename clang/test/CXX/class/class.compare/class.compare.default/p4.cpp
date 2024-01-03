@@ -1,5 +1,5 @@
 // RUN: %clang_cc1 -std=c++2a -verify %s
-// RUN: %clang_cc1 -std=c++2a -WInvalid-constexpr -verify=expected,extension %s
+// RUN: %clang_cc1 -std=c++2a -Wc++23-default-comp-relaxed-constexpr -verify=expected,extension %s
 
 // This test is for [class.compare.default]p3 as modified and renumbered to p4
 // by P2002R0.

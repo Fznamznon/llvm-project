@@ -229,9 +229,9 @@ namespace DR1364 {
     return k; // ok, even though lvalue-to-rvalue conversion of a function
               // parameter is not allowed in a constant expression.
   }
-  int kGlobal; // expected-note {{here}}
-  constexpr int f() { // expected-error {{constexpr function never produces a constant expression}}
-    return kGlobal;   // expected-note {{read of non-const}}
+  int kGlobal; // beforecxx23-note {{here}}
+  constexpr int f() { // beforecxx23-error {{constexpr function that never produces a constant expression is a C++23 extension}}
+    return kGlobal;   // beforecxx23-note {{read of non-const}}
   }
 }
 
@@ -272,7 +272,7 @@ namespace std_example {
     int a; // beforecxx20-warning {{uninitialized}}
     return a;
   }
-  constexpr int prev(int x) { // beforecxx14-error {{never produces a constant expression}}
+  constexpr int prev(int x) { // beforecxx14-error {{constexpr function that never produces a constant expression is a C++23 extension}}
     return --x;               // beforecxx14-note {{subexpression}}
   }
 

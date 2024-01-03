@@ -884,7 +884,7 @@ void func() {
   S<Baz, 3> s7;
 }
 
-consteval int aConstevalFunction() { // expected-error {{consteval function never produces a constant expression}}
+consteval int aConstevalFunction() { // expected-error {{consteval function that never produces a constant expression}}
   // Defaulted default constructors are implicitly consteval.
   S<Bar, 1> s1;
 
