@@ -1754,10 +1754,13 @@ static bool CheckConstexprParameterTypes(Sema &SemaRef,
     const ParmVarDecl *PD = FD->getParamDecl(ArgIndex);
     assert(PD && "null in a parameter list");
     SourceLocation ParamLoc = PD->getLocation();
-    if (CheckLiteralType(SemaRef, Kind, ParamLoc, *i,
-                         diag::err_constexpr_non_literal_param, ArgIndex + 1,
-                         PD->getSourceRange(), isa<CXXConstructorDecl>(FD),
-                         FD->isConsteval()))
+    if (CheckLiteralType(
+            SemaRef, Kind, ParamLoc, *i,
+            SemaRef.getLangOpts().CPlusPlus23
+                ? diag::warn_cxx23_compat_constexpr_non_literal_param
+                : diag::ext_constexpr_non_literal_param,
+            ArgIndex + 1, PD->getSourceRange(), isa<CXXConstructorDecl>(FD),
+            FD->isConsteval()))
       return false;
   }
   return true;
@@ -1767,9 +1770,12 @@ static bool CheckConstexprParameterTypes(Sema &SemaRef,
 /// true. If not, produce a suitable diagnostic and return false.
 static bool CheckConstexprReturnType(Sema &SemaRef, const FunctionDecl *FD,
                                      Sema::CheckConstexprKind Kind) {
-  if (CheckLiteralType(SemaRef, Kind, FD->getLocation(), FD->getReturnType(),
-                       diag::err_constexpr_non_literal_return,
-                       FD->isConsteval()))
+  if (CheckLiteralType(
+          SemaRef, Kind, FD->getLocation(), FD->getReturnType(),
+          SemaRef.getLangOpts().CPlusPlus23
+              ? diag::warn_cxx23_compat_constexpr_non_literal_return
+              : diag::ext_constexpr_non_literal_return,
+          FD->isConsteval()))
     return false;
   return true;
 }

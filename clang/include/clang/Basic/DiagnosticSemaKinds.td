@@ -2798,11 +2798,14 @@ def note_non_literal_incomplete : Note<
 def note_non_literal_virtual_base : Note<"%select{struct|interface|class}0 "
   "with virtual base %plural{1:class|:classes}1 is not a literal type">;
 def note_constexpr_virtual_base_here : Note<"virtual base class declared here">;
-def err_constexpr_non_literal_return : Error<
-  "%select{constexpr|consteval}0 function's return type %1 is not a literal type">;
-def err_constexpr_non_literal_param : Error<
-  "%select{constexpr|consteval}2 %select{function|constructor}1's %ordinal0 parameter type %3 is "
-  "not a literal type">;
+def ext_constexpr_non_literal_return : ExtWarn<
+  "%select{constexpr|consteval}0 function with non-literal return type %1 is a C++23 extension">, InGroup<CXX23>, DefaultError;
+def warn_cxx23_compat_constexpr_non_literal_return : Warning<
+  "%select{constexpr|consteval}0 function with non-literal return type %1 is is incompatible with C++ standards before C++23">, InGroup<CXXPre23Compat>, DefaultIgnore;
+def ext_constexpr_non_literal_param : ExtWarn<
+  "%select{constexpr|consteval}2 %select{function|constructor}1 witg %ordinal0 non-literal parameter type %3 is a C++23 extension">, InGroup<CXX23>, DefaultError;
+def warn_cxx23_compat_constexpr_non_literal_param : Warning<
+  "%select{constexpr|consteval}2 %select{function|constructor}1 with %ordinal0 non-literal parameter type %3 is not compatible with C++ standards before C++23">, InGroup<CXXPre23Compat>, DefaultIgnore;
 def err_constexpr_body_invalid_stmt : Error<
   "statement not allowed in %select{constexpr|consteval}1 %select{function|constructor}0">;
 def ext_constexpr_body_invalid_stmt : ExtWarn<

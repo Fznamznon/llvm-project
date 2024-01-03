@@ -8,7 +8,7 @@ struct NonLiteral { NonLiteral(); };
 // [C++1y] - void
 constexpr void f() {}
 #ifndef CXX1Y
-// expected-error@-2 {{'void' is not a literal type}}
+// expected-error@-2 {{constexpr function with non-literal return type 'void' is a C++23 extension}}
 #endif
 
 // - a scalar type
