@@ -1722,12 +1722,19 @@ static bool CheckConstexprDestructorSubobjects(Sema &SemaRef,
       return true;
 
     if (Kind == Sema::CheckConstexprKind::Diagnose) {
-      SemaRef.Diag(DD->getLocation(), diag::err_constexpr_dtor_subobject)
+      SemaRef.Diag(DD->getLocation(),
+                   SemaRef.getLangOpts().CPlusPlus23
+                       ? diag::warn_cxx23_compat_constexpr_dtor_subobject
+                       : diag::ext_constexpr_dtor_subobject)
           << static_cast<int>(DD->getConstexprKind()) << !FD
           << (FD ? FD->getDeclName() : DeclarationName()) << T;
       SemaRef.Diag(Loc, diag::note_constexpr_dtor_subobject)
           << !FD << (FD ? FD->getDeclName() : DeclarationName()) << T;
     }
+
+    if (SemaRef.getLangOpts().CPlusPlus23)
+      return true;
+
     return false;
   };
 
@@ -1760,8 +1767,11 @@ static bool CheckConstexprParameterTypes(Sema &SemaRef,
                 ? diag::warn_cxx23_compat_constexpr_non_literal_param
                 : diag::ext_constexpr_non_literal_param,
             ArgIndex + 1, PD->getSourceRange(), isa<CXXConstructorDecl>(FD),
-            FD->isConsteval()))
+            FD->isConsteval())) {
+      if (SemaRef.getLangOpts().CPlusPlus23)
+        return true;
       return false;
+    }
   }
   return true;
 }
@@ -1775,8 +1785,11 @@ static bool CheckConstexprReturnType(Sema &SemaRef, const FunctionDecl *FD,
           SemaRef.getLangOpts().CPlusPlus23
               ? diag::warn_cxx23_compat_constexpr_non_literal_return
               : diag::ext_constexpr_non_literal_return,
-          FD->isConsteval()))
+          FD->isConsteval())) {
+    if (SemaRef.getLangOpts().CPlusPlus23)
+      return true;
     return false;
+  }
   return true;
 }
 

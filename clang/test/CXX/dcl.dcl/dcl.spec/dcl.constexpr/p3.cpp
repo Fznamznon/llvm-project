@@ -51,7 +51,7 @@ struct T : SS, NonLiteral {
 
   //  - each of its parameter types shall be a literal type;
   // With support for P2448R2 constexpr functions are allowed to have parameters of non-literal types in C++23.
-  constexpr int NonLiteralParam(NonLiteral) const { return 0; } // beforecxx23-error {{constexpr function witg 1st non-literal parameter type 'NonLiteral' is a C++23 extension}}
+  constexpr int NonLiteralParam(NonLiteral) const { return 0; } // beforecxx23-error {{constexpr function with 1st non-literal parameter type 'NonLiteral' is a C++23 extension}}
   typedef int G(NonLiteral) const;
   constexpr G NonLiteralParam2; // ok until definition
 

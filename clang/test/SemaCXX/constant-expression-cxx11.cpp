@@ -1767,7 +1767,7 @@ namespace TLS {
 }
 
 namespace Void {
-  constexpr void f() { return; } // cxx11-error{{constexpr function's return type 'void' is not a literal type}}
+  constexpr void f() { return; } // cxx11-error{{constexpr function with non-literal return type 'void' is a C++23 extension}}
 
   void assert_failed(const char *msg, const char *file, int line); // expected-note {{declared here}}
 #define ASSERT(expr) ((expr) ? static_cast<void>(0) : assert_failed(#expr, __FILE__, __LINE__))

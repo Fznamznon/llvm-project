@@ -24,8 +24,8 @@ struct Literal {
 // shall be a literal type.
 struct S {
   constexpr S(int, N::C) {}
-  constexpr S(int, NonLiteral, N::C) {} // expected-error {{constexpr constructor's 2nd parameter type 'NonLiteral' is not a literal type}}
-  constexpr S(int, NonLiteral = 42) {} // expected-error {{constexpr constructor's 2nd parameter type 'NonLiteral' is not a literal type}}
+  constexpr S(int, NonLiteral, N::C) {} // expected-error {{constexpr constructor with 2nd non-literal parameter type 'NonLiteral' is a C++23 extension}}
+  constexpr S(int, NonLiteral = 42) {} // expected-error {{constexpr constructor with 2nd non-literal parameter type 'NonLiteral' is a C++23 extension}}
 
   // In addition, either its function-body shall be = delete or = default
   constexpr S() = default;

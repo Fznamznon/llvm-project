@@ -2763,10 +2763,14 @@ def err_constexpr_tag : Error<
   "cannot be marked %sub{select_constexpr_spec_kind}1">;
 def err_constexpr_dtor : Error<
   "destructor cannot be declared %sub{select_constexpr_spec_kind}0">;
-def err_constexpr_dtor_subobject : Error<
-  "destructor cannot be declared %sub{select_constexpr_spec_kind}0 because "
+def ext_constexpr_dtor_subobject : ExtWarn<
+  "destructor cannot be declared %sub{select_constexpr_spec_kind}0 before C++23 because "
   "%select{data member %2|base class %3}1 does not have a "
-  "constexpr destructor">;
+  "constexpr destructor">, InGroup<CXX23>, DefaultError;
+def warn_cxx23_compat_constexpr_dtor_subobject : ExtWarn<
+  "%sub{select_constexpr_spec_kind}0 destructor is incompatible with C++ standards before C++23 because "
+  "%select{data member %2|base class %3}1 does not have a "
+  "constexpr destructor">, InGroup<CXXPre23Compat>, DefaultIgnore;
 def note_constexpr_dtor_subobject : Note<
   "%select{data member %1|base class %2}0 declared here">;
 def err_constexpr_wrong_decl_kind : Error<
@@ -2803,7 +2807,7 @@ def ext_constexpr_non_literal_return : ExtWarn<
 def warn_cxx23_compat_constexpr_non_literal_return : Warning<
   "%select{constexpr|consteval}0 function with non-literal return type %1 is is incompatible with C++ standards before C++23">, InGroup<CXXPre23Compat>, DefaultIgnore;
 def ext_constexpr_non_literal_param : ExtWarn<
-  "%select{constexpr|consteval}2 %select{function|constructor}1 witg %ordinal0 non-literal parameter type %3 is a C++23 extension">, InGroup<CXX23>, DefaultError;
+  "%select{constexpr|consteval}2 %select{function|constructor}1 with %ordinal0 non-literal parameter type %3 is a C++23 extension">, InGroup<CXX23>, DefaultError;
 def warn_cxx23_compat_constexpr_non_literal_param : Warning<
   "%select{constexpr|consteval}2 %select{function|constructor}1 with %ordinal0 non-literal parameter type %3 is not compatible with C++ standards before C++23">, InGroup<CXXPre23Compat>, DefaultIgnore;
 def err_constexpr_body_invalid_stmt : Error<
