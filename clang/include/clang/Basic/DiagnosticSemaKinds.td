@@ -2805,7 +2805,7 @@ def note_constexpr_virtual_base_here : Note<"virtual base class declared here">;
 def ext_constexpr_non_literal_return : ExtWarn<
   "%select{constexpr|consteval}0 function with non-literal return type %1 is a C++23 extension">, InGroup<CXX23>, DefaultError;
 def warn_cxx23_compat_constexpr_non_literal_return : Warning<
-  "%select{constexpr|consteval}0 function with non-literal return type %1 is is incompatible with C++ standards before C++23">, InGroup<CXXPre23Compat>, DefaultIgnore;
+  "%select{constexpr|consteval}0 function with non-literal return type %1 is incompatible with C++ standards before C++23">, InGroup<CXXPre23Compat>, DefaultIgnore;
 def ext_constexpr_non_literal_param : ExtWarn<
   "%select{constexpr|consteval}2 %select{function|constructor}1 with %ordinal0 non-literal parameter type %3 is a C++23 extension">, InGroup<CXX23>, DefaultError;
 def warn_cxx23_compat_constexpr_non_literal_param : Warning<
@@ -9536,14 +9536,14 @@ def err_defaulted_special_member_copy_const_param : Error<
 def err_defaulted_copy_assign_not_ref : Error<
   "the parameter for an explicitly-defaulted copy assignment operator must be an "
   "lvalue reference type">;
-def err_incorrect_defaulted_constexpr : Error<
-  "defaulted definition of %sub{select_special_member_kind}0 "
-  "is not constexpr">;
+def ext_incorrect_defaulted_constexpr : ExtWarn<
+  "defaulted definition of %sub{select_special_member_kind}0 that marked %select{constexpr|consteval}1 "
+  "but never produces a constant expression is a C++23 extension">, InGroup<CXX23>, DefaultError;
+def warn_cxx23_compat_incorrect_defaulted_constexpr : Warning<
+  "defaulted definition of %sub{select_special_member_kind}0 that marked %select{constexpr|consteval}1 "
+  "but never produces a constant expression is incompatible with C++ standards before C++23">, InGroup<CXXPre23Compat>, DefaultIgnore;
 def err_incorrect_defaulted_constexpr_with_vb: Error<
   "%sub{select_special_member_kind}0 cannot be 'constexpr' in a class with virtual base class">;
-def err_incorrect_defaulted_consteval : Error<
-  "defaulted declaration of %sub{select_special_member_kind}0 "
-  "cannot be consteval because implicit definition is not constexpr">;
 def warn_defaulted_method_deleted : Warning<
   "explicitly defaulted %sub{select_special_member_kind}0 is implicitly "
   "deleted">, InGroup<DefaultedFunctionDeleted>;

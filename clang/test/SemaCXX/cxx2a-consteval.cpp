@@ -54,7 +54,7 @@ struct C {
 
 struct D {
   C c;
-  consteval D() = default; // expected-error {{cannot be consteval}}
+  consteval D() = default; // expected-error {{marked consteval but never produces a constant expression}}
   consteval ~D() = default; // expected-error {{destructor cannot be declared consteval}}
 };
 

@@ -1,6 +1,6 @@
 // RUN: %clang_cc1 -fcxx-exceptions -verify=expected,beforecxx14,beforecxx20,beforecxx23 -std=c++11 %s
-// RUN: %clang_cc1 -fcxx-exceptions -verify=expected,aftercxx14,beforecxx20,beforecxx23 -std=c++14 %s
-// RUN: %clang_cc1 -fcxx-exceptions -verify=expected,aftercxx14,aftercxx20,beforecxx23 -std=c++20  %s
+// RUN: %clang_cc1 -fcxx-exceptions -verify=expected,aftercxx14,beforecxx20,beforecxx23,cxx14_20 -std=c++14 %s
+// RUN: %clang_cc1 -fcxx-exceptions -verify=expected,aftercxx14,aftercxx20,beforecxx23,cxx14_20 -std=c++20  %s
 // RUN: %clang_cc1 -fcxx-exceptions -verify=expected,aftercxx14,aftercxx20 -std=c++23 %s
 
 namespace N {
@@ -65,7 +65,7 @@ struct T : SS, NonLiteral {
   // constexpr since they can't be const.
   constexpr T &operator=(const T &) = default; // beforecxx14-error {{an explicitly-defaulted copy assignment operator may not have 'const', 'constexpr' or 'volatile' qualifiers}} \
                                                // beforecxx14-warning {{C++14}} \
-                                               // aftercxx14-error{{defaulted definition of copy assignment operator is not constexpr}}
+                                               // cxx14_20-error{{defaulted definition of copy assignment operator that marked constexpr but never produces a constant expression}}
 };
 
 constexpr int T::OutOfLineVirtual() const { return 0; }

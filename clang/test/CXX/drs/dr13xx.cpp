@@ -423,13 +423,13 @@ namespace dr1359 { // dr1359: 3.5
 #if __cplusplus >= 201103L
   union A { constexpr A() = default; };
   union B { constexpr B() = default; int a; }; // #dr1359-B
-  // cxx11-17-error@-1 {{defaulted definition of default constructor is not constexpr}}
+  // cxx11-17-error@-1 {{defaulted definition of default constructor that marked constexpr but never produces a constant expression is a C++23 extension}}
   union C { constexpr C() = default; int a, b; }; // #dr1359-C
-  // cxx11-17-error@-1 {{defaulted definition of default constructor is not constexpr}} 
+  // cxx11-17-error@-1 {{defaulted definition of default constructor that marked constexpr}} 
   struct X { constexpr X() = default; union {}; };
   // since-cxx11-error@-1 {{declaration does not declare anything}}
   struct Y { constexpr Y() = default; union { int a; }; }; // #dr1359-Y
-  // cxx11-17-error@-1 {{defaulted definition of default constructor is not constexpr}}
+  // cxx11-17-error@-1 {{defaulted definition of default constructor that marked constexpr}}
 
   constexpr A a = A();
   constexpr B b = B();
