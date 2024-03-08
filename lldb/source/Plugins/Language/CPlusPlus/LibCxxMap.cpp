@@ -177,11 +177,11 @@ public:
 
   ~LibcxxStdMapSyntheticFrontEnd() override = default;
 
-  size_t CalculateNumChildren() override;
+  uint32_t CalculateNumChildren() override;
 
-  lldb::ValueObjectSP GetChildAtIndex(size_t idx) override;
+  lldb::ValueObjectSP GetChildAtIndex(uint32_t idx) override;
 
-  bool Update() override;
+  lldb::ChildCacheState Update() override;
 
   bool MightHaveChildren() override;
 
@@ -209,7 +209,7 @@ lldb_private::formatters::LibcxxStdMapSyntheticFrontEnd::
     Update();
 }
 
-size_t lldb_private::formatters::LibcxxStdMapSyntheticFrontEnd::
+uint32_t lldb_private::formatters::LibcxxStdMapSyntheticFrontEnd::
     CalculateNumChildren() {
   if (m_count != UINT32_MAX)
     return m_count;
@@ -308,7 +308,7 @@ void lldb_private::formatters::LibcxxStdMapSyntheticFrontEnd::GetValueOffset(
 
 lldb::ValueObjectSP
 lldb_private::formatters::LibcxxStdMapSyntheticFrontEnd::GetChildAtIndex(
-    size_t idx) {
+    uint32_t idx) {
   static ConstString g_cc_("__cc_"), g_cc("__cc");
   static ConstString g_nc("__nc");
 
@@ -405,15 +405,16 @@ lldb_private::formatters::LibcxxStdMapSyntheticFrontEnd::GetChildAtIndex(
   return potential_child_sp;
 }
 
-bool lldb_private::formatters::LibcxxStdMapSyntheticFrontEnd::Update() {
+lldb::ChildCacheState
+lldb_private::formatters::LibcxxStdMapSyntheticFrontEnd::Update() {
   m_count = UINT32_MAX;
   m_tree = m_root_node = nullptr;
   m_iterators.clear();
   m_tree = m_backend.GetChildMemberWithName("__tree_").get();
   if (!m_tree)
-    return false;
+    return lldb::ChildCacheState::eRefetch;
   m_root_node = m_tree->GetChildMemberWithName("__begin_node_").get();
-  return false;
+  return lldb::ChildCacheState::eRefetch;
 }
 
 bool lldb_private::formatters::LibcxxStdMapSyntheticFrontEnd::
