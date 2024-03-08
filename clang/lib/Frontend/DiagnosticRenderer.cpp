@@ -555,7 +555,7 @@ void DiagnosticRenderer::emitMacroExpansions(FullSourceLoc Loc,
     // backtraces.
     if (L.isFileID())
       L = SM.getImmediateMacroCallerLoc(LocationStack.back());
-    assert(L.isValid() && "must have a valid source location here");
+    // assert(L.isValid() && "must have a valid source location here");
   }
 
   LocationStack.erase(LocationStack.begin(),

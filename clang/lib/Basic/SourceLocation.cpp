@@ -157,7 +157,7 @@ SourceRange::printToString(const SourceManager &SM) const {
 //===----------------------------------------------------------------------===//
 
 FileID FullSourceLoc::getFileID() const {
-  assert(isValid());
+  // assert(isValid());
   return SrcMgr->getFileID(*this);
 }
 

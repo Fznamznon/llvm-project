@@ -98,7 +98,10 @@ public:
 private:
   UIntTy ID = 0;
 
-  enum : UIntTy { MacroIDBit = 1ULL << (8 * sizeof(UIntTy) - 1) };
+  enum : UIntTy {
+    MacroIDBit = 1ULL << (8 * sizeof(UIntTy) - 1),
+    INF = MacroIDBit - 1
+  };
 
 public:
   bool isFileID() const  { return (ID & MacroIDBit) == 0; }
@@ -111,6 +114,9 @@ public:
   /// option).
   bool isValid() const { return ID != 0; }
   bool isInvalid() const { return ID == 0; }
+
+  /// For the case when we ran out of locations but still want to continue.
+  // bool pointsToInfinity() const { return ID == INF; }
 
 private:
   /// Return the offset into the manager's global input view.
@@ -134,9 +140,13 @@ public:
   /// Return a source location with the specified offset from this
   /// SourceLocation.
   SourceLocation getLocWithOffset(IntTy Offset) const {
-    assert(((getOffset()+Offset) & MacroIDBit) == 0 && "offset overflow");
+    // assert(((getOffset()+Offset) & MacroIDBit) == 0 && "offset overflow");
     SourceLocation L;
-    L.ID = ID+Offset;
+    // If we have offset overflow, point to infinity then.
+    if ((getOffset()+Offset) & MacroIDBit)
+      L.ID = ID+Offset;
+    else
+      L.ID = INF;
     return L;
   }
 

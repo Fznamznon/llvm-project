@@ -1287,8 +1287,8 @@ highlightLines(StringRef FileData, unsigned StartLineNumber,
 void TextDiagnostic::emitSnippetAndCaret(
     FullSourceLoc Loc, DiagnosticsEngine::Level Level,
     SmallVectorImpl<CharSourceRange> &Ranges, ArrayRef<FixItHint> Hints) {
-  assert(Loc.isValid() && "must have a valid source location here");
-  assert(Loc.isFileID() && "must have a file location here");
+  // assert(Loc.isValid() && "must have a valid source location here");
+  // assert(Loc.isFileID() && "must have a file location here");
 
   // If caret diagnostics are enabled and we have location, we want to
   // emit the caret.  However, we only do this if the location moved

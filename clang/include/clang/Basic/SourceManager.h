@@ -288,7 +288,7 @@ static_assert(alignof(ContentCache) >= 8,
 ///
 /// FileInfo should not grow larger than ExpansionInfo. Doing so will
 /// cause memory to bloat in compilations with many unloaded macro
-/// expansions, since the two data structurs are stored in a union in
+/// expansions, since the two data structures are stored in a union in
 /// SLocEntry. Extra fields should instead go in "ContentCache *", which
 /// stores file contents and other bits on the side.
 ///

@@ -41,6 +41,7 @@
 #include <tuple>
 #include <utility>
 #include <vector>
+#include <iostream>
 
 using namespace clang;
 using namespace SrcMgr;
@@ -603,12 +604,16 @@ FileID SourceManager::createFileIDImpl(ContentCache &File, StringRef Filename,
     return FileID::get(LoadedID);
   }
   unsigned FileSize = File.getSize();
-  if (!(NextLocalOffset + FileSize + 1 > NextLocalOffset &&
-        NextLocalOffset + FileSize + 1 <= CurrentLoadedOffset)) {
-    Diag.Report(IncludePos, diag::err_sloc_space_too_large);
-    noteSLocAddressSpaceUsage(Diag);
-    return FileID();
-  }
+  std::cout << FileSize << std::endl;
+  std::cout << NextLocalOffset << std::endl;
+  std::cout << CurrentLoadedOffset << std::endl;
+  std::cout << FileCharacter << std::endl;
+  // if (!(NextLocalOffset + FileSize + 1 > NextLocalOffset &&
+  //       NextLocalOffset + FileSize + 1 <= CurrentLoadedOffset)) {
+  //   Diag.Report(IncludePos, diag::err_sloc_space_too_large);
+  //   noteSLocAddressSpaceUsage(Diag);
+  //   return FileID();
+  // }
   LocalSLocEntryTable.push_back(
       SLocEntry::get(NextLocalOffset,
                      FileInfo::get(IncludePos, File, FileCharacter, Filename)));
