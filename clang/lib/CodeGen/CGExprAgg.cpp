@@ -507,6 +507,17 @@ void AggExprEmitter::EmitArrayInit(Address DestPtr, llvm::ArrayType *AType,
   uint64_t NumInitElements = Args.size();
 
   uint64_t NumArrayElements = AType->getNumElements();
+  for (const auto *Init : Args) {
+    if (const auto *Embed =
+            dyn_cast<PPEmbedExpr>(Init->IgnoreParenImpCasts())) {
+      NumInitElements += Embed->getDataElementCount(CGF.getContext()) - 1;
+      if (NumInitElements > NumArrayElements) {
+        NumInitElements = NumArrayElements;
+        break;
+      }
+    }
+  }
+
   assert(NumInitElements <= NumArrayElements);
 
   QualType elementType =
@@ -584,10 +595,9 @@ void AggExprEmitter::EmitArrayInit(Address DestPtr, llvm::ArrayType *AType,
   // elements have been initialized.
   llvm::Value *element = begin;
 
-  // Emit the explicit initializers.
-  for (uint64_t i = 0; i != NumInitElements; ++i) {
+  auto Emit = [&](Expr *Init, uint64_t ArrayIndex, bool Embed) {
     // Advance to the next element.
-    if (i > 0) {
+    if (ArrayIndex > 0) {
       element = Builder.CreateInBoundsGEP(
           llvmElementType, element, one, "arrayinit.element");
 
@@ -599,7 +609,26 @@ void AggExprEmitter::EmitArrayInit(Address DestPtr, llvm::ArrayType *AType,
 
     LValue elementLV = CGF.MakeAddrLValue(
         Address(element, llvmElementType, elementAlign), elementType);
-    EmitInitializationToLValue(Args[i], elementLV);
+    EmitInitializationToLValue(Init, elementLV);
+
+  };
+
+  uint64_t ArrayIndex = 0;
+  // Emit the explicit initializers.
+  for (uint64_t i = 0; i != NumInitElements; ++i) {
+    if (ArrayIndex >= NumInitElements)
+      break;
+    if (auto *PPEmbed = dyn_cast<PPEmbedExpr>(Args[i]->IgnoreParenImpCasts())) {
+      for (IntegerLiteral *IE : PPEmbed->underlying_data_elements()) {
+        Emit(IE, ArrayIndex, true);
+        ArrayIndex++;
+        if (ArrayIndex >= NumInitElements)
+          break;
+      }
+    } else {
+      Emit(Args[i], ArrayIndex, false);
+      ArrayIndex++;
+    }
   }
 
   // Check whether there's a non-trivial array-fill expression.

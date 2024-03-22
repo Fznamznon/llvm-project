@@ -11093,11 +11093,26 @@ bool ArrayExprEvaluator::VisitCXXParenListOrInitListExpr(
 
   unsigned NumEltsToInit = Args.size();
   unsigned NumElts = CAT->getSize().getZExtValue();
+  LLVM_DEBUG(llvm::dbgs() << "The number of elements to initialize: "
+                          << NumEltsToInit << ".\n");
+  LLVM_DEBUG(llvm::dbgs() << "The number of elements: "
+                          << NumElts << ".\n");
 
   // If the initializer might depend on the array index, run it for each
   // array element.
-  if (NumEltsToInit != NumElts && MaybeElementDependentArrayFiller(ArrayFiller))
+  if (NumEltsToInit != NumElts &&
+          MaybeElementDependentArrayFiller(ArrayFiller)) {
     NumEltsToInit = NumElts;
+   } else {
+    for (const auto *Init : Args) {
+      if (const auto *Embed =
+              dyn_cast<PPEmbedExpr>(Init->IgnoreParenImpCasts())) {
+        NumEltsToInit += Embed->getDataElementCount(Info.Ctx) - 1;
+      }
+    }
+    if (NumEltsToInit > NumElts)
+      NumEltsToInit = NumElts;
+  }
 
   LLVM_DEBUG(llvm::dbgs() << "The number of elements to initialize: "
                           << NumEltsToInit << ".\n");
@@ -11113,17 +11128,45 @@ bool ArrayExprEvaluator::VisitCXXParenListOrInitListExpr(
       Result.getArrayFiller() = Filler;
   }
 
+
   LValue Subobject = This;
   Subobject.addArray(Info, ExprToVisit, CAT);
-  for (unsigned Index = 0; Index != NumEltsToInit; ++Index) {
-    const Expr *Init = Index < Args.size() ? Args[Index] : ArrayFiller;
-    if (!EvaluateInPlace(Result.getArrayInitializedElt(Index),
-                         Info, Subobject, Init) ||
+  auto Eval = [&](const Expr *Init, unsigned ArrayIndex, bool EmbedInit) {
+    LLVM_DEBUG(llvm::dbgs() << "Initializing element : "
+                            << ArrayIndex << ".\n");
+    if (!EvaluateInPlace(Result.getArrayInitializedElt(ArrayIndex), Info,
+                         Subobject, Init) ||
         !HandleLValueArrayAdjustment(Info, Init, Subobject,
                                      CAT->getElementType(), 1)) {
       if (!Info.noteFailure())
         return false;
       Success = false;
+    }
+    if (EmbedInit &&
+        !Info.Ctx.hasSameType(Init->getType(), CAT->getElementType()))
+      Result.getArrayInitializedElt(ArrayIndex).getInt() = HandleIntToIntCast(
+          Info, Init, CAT->getElementType(), Init->getType(),
+          Result.getArrayInitializedElt(ArrayIndex).getInt());
+    return true;
+  };
+  unsigned ArrayIndex = 0;
+  for (unsigned Index = 0; Index != NumEltsToInit; ++Index) {
+    const Expr *Init = Index < Args.size() ? Args[Index] : ArrayFiller;
+    if (ArrayIndex >= NumEltsToInit)
+      break;
+    if (const auto *PPEmbed =
+            dyn_cast<PPEmbedExpr>(Init->IgnoreParenImpCasts())) {
+      for (const IntegerLiteral *IE : PPEmbed->underlying_data_elements()) {
+        if (!Eval(IE, ArrayIndex, true))
+          return false;
+        ArrayIndex++;
+        if (ArrayIndex >= NumEltsToInit)
+          break;
+      }
+    } else {
+      if (!Eval(Init, ArrayIndex, false))
+        return false;
+      ArrayIndex++;
     }
   }
 
