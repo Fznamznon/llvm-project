@@ -1161,6 +1161,13 @@ void StmtPrinter::VisitPPEmbedExpr(PPEmbedExpr *Node) {
   assert(false && "not yet implemented");
 }
 
+void StmtPrinter::VisitEmbedSubscriptExpr(EmbedSubscriptExpr *Node) {
+  // This isn't yet implemented because the contents of the PPEmbedExpr are
+  // not generally retained in the AST. e.g., when used as an initializer, the
+  // expression will be converted into an InitListExpr, etc.
+  assert(false && "not yet implemented");
+}
+
 void StmtPrinter::VisitConstantExpr(ConstantExpr *Node) {
   PrintExpr(Node->getSubExpr());
 }

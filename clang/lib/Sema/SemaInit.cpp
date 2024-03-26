@@ -313,7 +313,7 @@ class InitListChecker {
   NoInitExpr *DummyExpr = nullptr;
   SmallVectorImpl<QualType> *AggrDeductionCandidateParamTypes = nullptr;
   PPEmbedExpr *CurEmbed = nullptr; // Save current embed we're processing.
-  unsigned CurEmbedIndex = -1;
+  unsigned CurEmbedIndex = 0;
 
   NoInitExpr *getDummyInit() {
     if (!DummyExpr)
@@ -1425,9 +1425,6 @@ void InitListChecker::CheckSubElementType(const InitializedEntity &Entity,
     UpdateStructuredListElement(StructuredList, StructuredIndex, expr);
     ++Index;
     return;
-  } else if (auto* Embed = dyn_cast<PPEmbedExpr>(expr)) {
-    if (Embed->getDataElementCount(SemaRef.Context) == 1)
-      expr = SemaRef.ExpandSinglePPEmbedExpr(Embed);
   }
 
   if (SemaRef.getLangOpts().CPlusPlus || isa<InitListExpr>(expr)) {
@@ -1469,6 +1466,39 @@ void InitListChecker::CheckSubElementType(const InitializedEntity &Entity,
       // Brace elision is never performed if the element is not an
       // assignment-expression.
       if (Seq || isa<InitListExpr>(expr)) {
+        if (auto *Embed = dyn_cast<PPEmbedExpr>(expr)) {
+          if (Embed->getDataElementCount(SemaRef.Context) == 1) {
+            expr = SemaRef.ExpandSinglePPEmbedExpr(Embed);
+          } else {
+            // Otherwise undrestand which part of embed we'd like to reference.
+            if (!CurEmbed) {
+              CurEmbed = Embed;
+              CurEmbedIndex = 0;
+            }
+            // Reference just one if we're initializing a single scalar.
+            unsigned ElsCount = 1;
+            // Otherwise try to fill whole array with embed data.
+            if (Entity.getKind() == InitializedEntity::EK_ArrayElement) {
+              ValueDecl *ArrDecl = Entity.getParent()->getDecl();
+              auto *AType = SemaRef.Context.getAsArrayType(ArrDecl->getType());
+              assert(AType && "expected array type when initializing array");
+              uint64_t NumElements =
+                  Embed->getDataElementCount(SemaRef.Context);
+              if (const auto *CAType = dyn_cast<ConstantArrayType>(AType))
+                NumElements = std::min(CAType->getSize().getZExtValue(),
+                                       NumElements - CurEmbedIndex);
+              ElsCount = NumElements;
+            }
+
+            expr = new (SemaRef.Context) EmbedSubscriptExpr(
+                Embed->getType(), Embed, CurEmbedIndex, ElsCount);
+            CurEmbedIndex += ElsCount;
+            if (CurEmbedIndex >= Embed->getDataElementCount(SemaRef.Context)) {
+              CurEmbed = nullptr;
+              CurEmbedIndex = 0;
+            }
+          }
+        }
         if (!VerifyOnly) {
           ExprResult Result = Seq.Perform(SemaRef, TmpEntity, Kind, expr);
           if (Result.isInvalid())
@@ -1482,7 +1512,8 @@ void InitListChecker::CheckSubElementType(const InitializedEntity &Entity,
           UpdateStructuredListElement(StructuredList, StructuredIndex,
                                       getDummyInit());
         }
-        ++Index;
+        if (!CurEmbed)
+          ++Index;
         if (AggrDeductionCandidateParamTypes)
           AggrDeductionCandidateParamTypes->push_back(ElemType);
         return;
@@ -1675,11 +1706,38 @@ void InitListChecker::CheckScalarType(const InitializedEntity &Entity,
     ++Index;
     ++StructuredIndex;
     return;
-  // } else if (auto *Embed = dyn_cast<PPEmbedExpr>(expr)) {
-  //   if (Embed->getDataElementCount(SemaRef.Context) == 1) {
-  //     // Expand the list in-place immediately, let the natural work take hold
-  //     expr = SemaRef.ExpandSinglePPEmbedExpr(Embed);
-  //   }
+  } else if (auto *Embed = dyn_cast<PPEmbedExpr>(expr)) {
+    // Expand single-element embed as pure integer literal.
+    if (Embed->getDataElementCount(SemaRef.Context) == 1) {
+      expr = SemaRef.ExpandSinglePPEmbedExpr(Embed);
+    } else {
+      // Otherwise undrestand which part of embed we'd like to reference.
+      if (!CurEmbed) {
+        CurEmbed = Embed;
+        CurEmbedIndex = 0;
+      }
+      // Reference just one if we're initializing a single scalar.
+      unsigned ElsCount = 1;
+      // Otherwise try to fill whole array with embed data.
+      if (Entity.getKind() == InitializedEntity::EK_ArrayElement) {
+        ValueDecl *ArrDecl = Entity.getParent()->getDecl();
+        auto *AType = SemaRef.Context.getAsArrayType(ArrDecl->getType());
+        assert(AType && "expected array type when initializing array");
+        uint64_t NumElements = Embed->getDataElementCount(SemaRef.Context);
+        if (const auto *CAType = dyn_cast<ConstantArrayType>(AType))
+          NumElements = std::min(CAType->getSize().getZExtValue(),
+                                 NumElements - CurEmbedIndex);
+        ElsCount = NumElements;
+      }
+
+      expr = new (SemaRef.Context)
+          EmbedSubscriptExpr(Embed->getType(), Embed, CurEmbedIndex, ElsCount);
+      CurEmbedIndex += ElsCount;
+      if (CurEmbedIndex >= Embed->getDataElementCount(SemaRef.Context)) {
+        CurEmbed = nullptr;
+        CurEmbedIndex = 0;
+      }
+    }
   }
 
   ExprResult Result;
@@ -1704,11 +1762,12 @@ void InitListChecker::CheckScalarType(const InitializedEntity &Entity,
     if (ResultExpr != expr && !VerifyOnly) {
       // The type was promoted, update initializer list.
       // FIXME: Why are we updating the syntactic init list?
-      IList->setInit(Index, ResultExpr);
+      // IList->setInit(Index, ResultExpr);
     }
   }
   UpdateStructuredListElement(StructuredList, StructuredIndex, ResultExpr);
-  ++Index;
+  if (!CurEmbed)
+    ++Index;
   if (AggrDeductionCandidateParamTypes)
     AggrDeductionCandidateParamTypes->push_back(DeclType);
 }
@@ -2074,12 +2133,23 @@ void InitListChecker::CheckArrayType(const InitializedEntity &Entity,
     InitializedEntity ElementEntity =
       InitializedEntity::InitializeElement(SemaRef.Context, StructuredIndex,
                                            Entity);
+
+    unsigned EmbedElementIndexBeforeInit = CurEmbedIndex;
     // Check this element.
     CheckSubElementType(ElementEntity, IList, elementType, Index,
                         StructuredList, StructuredIndex);
+    // FIXME This is maybe not true
     ++elementIndex;
-    if (const auto *PE = dyn_cast<PPEmbedExpr>(Init)) {
-      elementIndex = elementIndex + (PE->getDataElementCount(SemaRef.Context) - 1);
+    if (CurEmbed || isa<PPEmbedExpr>(Init)) {
+      if (CurEmbed) {
+        elementIndex =
+            elementIndex + CurEmbedIndex - EmbedElementIndexBeforeInit - 1;
+      } else {
+        auto Embed = cast<PPEmbedExpr>(Init);
+        elementIndex = elementIndex +
+                       Embed->getDataElementCount(SemaRef.Context) -
+                       EmbedElementIndexBeforeInit - 1;
+      }
     }
 
     // If the array is of incomplete type, keep track of the number of

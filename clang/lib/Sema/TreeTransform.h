@@ -12343,6 +12343,12 @@ ExprResult TreeTransform<Derived>::TransformPPEmbedExpr(PPEmbedExpr *E) {
   return E;
 }
 
+template <typename Derived>
+ExprResult
+TreeTransform<Derived>::TransformEmbedSubscriptExpr(EmbedSubscriptExpr *E) {
+  return E;
+}
+
 template<typename Derived>
 ExprResult
 TreeTransform<Derived>::TransformCUDAKernelCallExpr(CUDAKernelCallExpr *E) {

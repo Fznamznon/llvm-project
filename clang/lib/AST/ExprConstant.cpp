@@ -7708,6 +7708,20 @@ public:
     return true;
   }
 
+  bool VisitEmbedSubscriptExpr(const EmbedSubscriptExpr *E) {
+    PPEmbedExpr *PPEmbed = E->getEmbed();
+    auto It = PPEmbed->begin() + E->getBegin();
+    const unsigned NumOfEls = E->getDataElementCount();
+    for (unsigned EmbedIndex = 0; EmbedIndex < NumOfEls; ++EmbedIndex, ++It) {
+      // This will set Resulting APValue to the last element we see in this
+      // loop, so this implementation evaluates EmbedSubscriptExpr that refers
+      // to a single integer out of the box.
+      if (!StmtVisitorTy::Visit(*It))
+        return false;
+    }
+    return true;
+  }
+
   bool VisitPredefinedExpr(const PredefinedExpr *E) {
     return StmtVisitorTy::Visit(E->getFunctionName());
   }
@@ -11104,10 +11118,10 @@ bool ArrayExprEvaluator::VisitCXXParenListOrInitListExpr(
           MaybeElementDependentArrayFiller(ArrayFiller)) {
     NumEltsToInit = NumElts;
    } else {
-    for (const auto *Init : Args) {
-      if (const auto *Embed =
-              dyn_cast<PPEmbedExpr>(Init->IgnoreParenImpCasts())) {
-        NumEltsToInit += Embed->getDataElementCount(Info.Ctx) - 1;
+    for (auto *Init : Args) {
+      if (auto *EmbedS =
+              dyn_cast<EmbedSubscriptExpr>(Init->IgnoreParenImpCasts())) {
+        NumEltsToInit += EmbedS->getDataElementCount() - 1;
       }
     }
     if (NumEltsToInit > NumElts)
@@ -11154,10 +11168,13 @@ bool ArrayExprEvaluator::VisitCXXParenListOrInitListExpr(
     const Expr *Init = Index < Args.size() ? Args[Index] : ArrayFiller;
     if (ArrayIndex >= NumEltsToInit)
       break;
-    if (const auto *PPEmbed =
-            dyn_cast<PPEmbedExpr>(Init->IgnoreParenImpCasts())) {
-      for (const IntegerLiteral *IE : PPEmbed->underlying_data_elements()) {
-        if (!Eval(IE, ArrayIndex, true))
+    if (auto *EmbedS =
+            dyn_cast<EmbedSubscriptExpr>(Init->IgnoreParenImpCasts())) {
+      PPEmbedExpr *PPEmbed = EmbedS->getEmbed();
+      auto It = PPEmbed->begin() + EmbedS->getBegin();
+      const unsigned NumOfEls = EmbedS->getDataElementCount();
+      for (unsigned EmbedIndex = 0; EmbedIndex < NumOfEls; ++EmbedIndex, ++It) {
+        if (!Eval(*It, ArrayIndex, true))
           return false;
         ArrayIndex++;
         if (ArrayIndex >= NumEltsToInit)

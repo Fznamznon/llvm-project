@@ -4828,16 +4828,15 @@ public:
 
   size_t getDataElementCount(ASTContext &Context) const;
 
-private:
   template <bool Const>
   class ChildElementIter
       : public llvm::iterator_facade_base<
             // FIXME: it seems reasonable to make this a random access iterator
             // instead, but all current access patterns are a linear walk over
             // the contents, so it's being left for follow-up work if needed.
-            ChildElementIter<Const>, std::input_iterator_tag,
+            ChildElementIter<Const>, std::random_access_iterator_tag,
             std::conditional_t<Const, const IntegerLiteral *,
-                               IntegerLiteral *>> {
+                               IntegerLiteral *>, unsigned> {
     friend class PPEmbedExpr;
 
     PPEmbedExpr *PPExpr = nullptr;
@@ -4875,6 +4874,18 @@ private:
     bool operator==(ChildElementIter Other) const {
       return (PPExpr == Other.PPExpr && CurOffset == Other.CurOffset);
     }
+    ChildElementIter &operator+=(unsigned N) {
+      assert(PPExpr && "trying to increment an invalid iterator");
+      assert(CurOffset != ULLONG_MAX &&
+             "Already at the end of what we can iterate over");
+      if (CurOffset + N >= PPExpr->BinaryData->getByteLength()) {
+        CurOffset = ULLONG_MAX;
+        PPExpr = nullptr;
+      } else {
+        CurOffset += N;
+      }
+      return *this;
+    }
   }; // class ChildElementIter
 
 public:
@@ -4904,8 +4915,52 @@ public:
     return T->getStmtClass() == PPEmbedExprClass;
   }
 
+  ChildElementIter<false> begin() {
+    return ChildElementIter<false>(this);
+  }
+
 private:
   friend class ASTStmtReader;
+};
+
+/// Represent placeholer for a range inside of data imported by #embed
+/// directive.
+class EmbedSubscriptExpr : public Expr {
+  PPEmbedExpr *ReferencedEmbed;
+  unsigned Begin;
+  unsigned NumOfElements;
+
+public:
+  explicit EmbedSubscriptExpr(QualType T, PPEmbedExpr *ReferencedEmbed,
+                              unsigned Begin, unsigned NumOfElements)
+      : Expr(EmbedSubscriptExprClass, T, VK_PRValue, OK_Ordinary),
+        ReferencedEmbed(ReferencedEmbed), Begin(Begin),
+        NumOfElements(NumOfElements) {}
+
+  static bool classof(const Stmt *T) {
+    return T->getStmtClass() == EmbedSubscriptExprClass;
+  }
+
+  PPEmbedExpr *getEmbed() const {
+    return ReferencedEmbed;
+  }
+
+  unsigned getBegin() const {
+    return Begin;
+  }
+
+  unsigned getDataElementCount() const { return NumOfElements; }
+
+  SourceLocation getBeginLoc() const LLVM_READONLY { return SourceLocation(); }
+  SourceLocation getEndLoc() const LLVM_READONLY { return SourceLocation(); }
+
+  // Iterators
+  child_range children() {
+    return child_range(child_iterator(), child_iterator());
+  }
+  const_child_range children() const {
+    return const_child_range(const_child_iterator(), const_child_iterator());
+  }
 };
 
 /// Describes an C or C++ initializer list.
