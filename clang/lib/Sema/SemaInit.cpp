@@ -502,6 +502,41 @@ class InitListChecker {
   void CheckEmptyInitializable(const InitializedEntity &Entity,
                                SourceLocation Loc);
 
+  Expr *HandleEmbed(PPEmbedExpr *Embed, const InitializedEntity &Entity) {
+    Expr *Result = nullptr;
+    // Expand single-element embed as pure integer literal.
+    if (Embed->getDataElementCount(SemaRef.Context) == 1) {
+      Result = SemaRef.ExpandSinglePPEmbedExpr(Embed);
+    } else {
+      // Otherwise undrestand which part of embed we'd like to reference.
+      if (!CurEmbed) {
+        CurEmbed = Embed;
+        CurEmbedIndex = 0;
+      }
+      // Reference just one if we're initializing a single scalar.
+      uint64_t ElsCount = 1;
+      // Otherwise try to fill whole array with embed data.
+      if (Entity.getKind() == InitializedEntity::EK_ArrayElement) {
+        ValueDecl *ArrDecl = Entity.getParent()->getDecl();
+        auto *AType = SemaRef.Context.getAsArrayType(ArrDecl->getType());
+        assert(AType && "expected array type when initializing array");
+        ElsCount = Embed->getDataElementCount(SemaRef.Context);
+        if (const auto *CAType = dyn_cast<ConstantArrayType>(AType))
+          ElsCount = std::min(CAType->getSize().getZExtValue(),
+                              ElsCount - CurEmbedIndex);
+      }
+
+      Result = new (SemaRef.Context)
+          EmbedSubscriptExpr(Embed->getType(), Embed, CurEmbedIndex, ElsCount);
+      CurEmbedIndex += ElsCount;
+      if (CurEmbedIndex >= Embed->getDataElementCount(SemaRef.Context)) {
+        CurEmbed = nullptr;
+        CurEmbedIndex = 0;
+      }
+    }
+    return Result;
+  }
+
 public:
   InitListChecker(
       Sema &S, const InitializedEntity &Entity, InitListExpr *IL, QualType &T,
@@ -1467,37 +1502,7 @@ void InitListChecker::CheckSubElementType(const InitializedEntity &Entity,
       // assignment-expression.
       if (Seq || isa<InitListExpr>(expr)) {
         if (auto *Embed = dyn_cast<PPEmbedExpr>(expr)) {
-          if (Embed->getDataElementCount(SemaRef.Context) == 1) {
-            expr = SemaRef.ExpandSinglePPEmbedExpr(Embed);
-          } else {
-            // Otherwise undrestand which part of embed we'd like to reference.
-            if (!CurEmbed) {
-              CurEmbed = Embed;
-              CurEmbedIndex = 0;
-            }
-            // Reference just one if we're initializing a single scalar.
-            unsigned ElsCount = 1;
-            // Otherwise try to fill whole array with embed data.
-            if (Entity.getKind() == InitializedEntity::EK_ArrayElement) {
-              ValueDecl *ArrDecl = Entity.getParent()->getDecl();
-              auto *AType = SemaRef.Context.getAsArrayType(ArrDecl->getType());
-              assert(AType && "expected array type when initializing array");
-              uint64_t NumElements =
-                  Embed->getDataElementCount(SemaRef.Context);
-              if (const auto *CAType = dyn_cast<ConstantArrayType>(AType))
-                NumElements = std::min(CAType->getSize().getZExtValue(),
-                                       NumElements - CurEmbedIndex);
-              ElsCount = NumElements;
-            }
-
-            expr = new (SemaRef.Context) EmbedSubscriptExpr(
-                Embed->getType(), Embed, CurEmbedIndex, ElsCount);
-            CurEmbedIndex += ElsCount;
-            if (CurEmbedIndex >= Embed->getDataElementCount(SemaRef.Context)) {
-              CurEmbed = nullptr;
-              CurEmbedIndex = 0;
-            }
-          }
+          expr = HandleEmbed(Embed, Entity);
         }
         if (!VerifyOnly) {
           ExprResult Result = Seq.Perform(SemaRef, TmpEntity, Kind, expr);
@@ -1707,37 +1712,7 @@ void InitListChecker::CheckScalarType(const InitializedEntity &Entity,
     ++StructuredIndex;
     return;
   } else if (auto *Embed = dyn_cast<PPEmbedExpr>(expr)) {
-    // Expand single-element embed as pure integer literal.
-    if (Embed->getDataElementCount(SemaRef.Context) == 1) {
-      expr = SemaRef.ExpandSinglePPEmbedExpr(Embed);
-    } else {
-      // Otherwise undrestand which part of embed we'd like to reference.
-      if (!CurEmbed) {
-        CurEmbed = Embed;
-        CurEmbedIndex = 0;
-      }
-      // Reference just one if we're initializing a single scalar.
-      unsigned ElsCount = 1;
-      // Otherwise try to fill whole array with embed data.
-      if (Entity.getKind() == InitializedEntity::EK_ArrayElement) {
-        ValueDecl *ArrDecl = Entity.getParent()->getDecl();
-        auto *AType = SemaRef.Context.getAsArrayType(ArrDecl->getType());
-        assert(AType && "expected array type when initializing array");
-        uint64_t NumElements = Embed->getDataElementCount(SemaRef.Context);
-        if (const auto *CAType = dyn_cast<ConstantArrayType>(AType))
-          NumElements = std::min(CAType->getSize().getZExtValue(),
-                                 NumElements - CurEmbedIndex);
-        ElsCount = NumElements;
-      }
-
-      expr = new (SemaRef.Context)
-          EmbedSubscriptExpr(Embed->getType(), Embed, CurEmbedIndex, ElsCount);
-      CurEmbedIndex += ElsCount;
-      if (CurEmbedIndex >= Embed->getDataElementCount(SemaRef.Context)) {
-        CurEmbed = nullptr;
-        CurEmbedIndex = 0;
-      }
-    }
+    expr = HandleEmbed(Embed, Entity);
   }
 
   ExprResult Result;
@@ -2138,7 +2113,6 @@ void InitListChecker::CheckArrayType(const InitializedEntity &Entity,
     // Check this element.
     CheckSubElementType(ElementEntity, IList, elementType, Index,
                         StructuredList, StructuredIndex);
-    // FIXME This is maybe not true
     ++elementIndex;
     if (CurEmbed || isa<PPEmbedExpr>(Init)) {
       if (CurEmbed) {

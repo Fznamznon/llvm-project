@@ -509,8 +509,8 @@ void AggExprEmitter::EmitArrayInit(Address DestPtr, llvm::ArrayType *AType,
   uint64_t NumArrayElements = AType->getNumElements();
   for (const auto *Init : Args) {
     if (const auto *Embed =
-            dyn_cast<PPEmbedExpr>(Init->IgnoreParenImpCasts())) {
-      NumInitElements += Embed->getDataElementCount(CGF.getContext()) - 1;
+            dyn_cast<EmbedSubscriptExpr>(Init->IgnoreParenImpCasts())) {
+      NumInitElements += Embed->getDataElementCount() - 1;
       if (NumInitElements > NumArrayElements) {
         NumInitElements = NumArrayElements;
         break;
@@ -595,7 +595,7 @@ void AggExprEmitter::EmitArrayInit(Address DestPtr, llvm::ArrayType *AType,
   // elements have been initialized.
   llvm::Value *element = begin;
 
-  auto Emit = [&](Expr *Init, uint64_t ArrayIndex, bool Embed) {
+  auto Emit = [&](Expr *Init, uint64_t ArrayIndex) {
     // Advance to the next element.
     if (ArrayIndex > 0) {
       element = Builder.CreateInBoundsGEP(
@@ -618,15 +618,19 @@ void AggExprEmitter::EmitArrayInit(Address DestPtr, llvm::ArrayType *AType,
   for (uint64_t i = 0; i != NumInitElements; ++i) {
     if (ArrayIndex >= NumInitElements)
       break;
-    if (auto *PPEmbed = dyn_cast<PPEmbedExpr>(Args[i]->IgnoreParenImpCasts())) {
-      for (IntegerLiteral *IE : PPEmbed->underlying_data_elements()) {
-        Emit(IE, ArrayIndex, true);
+    if (auto *EmbedS =
+            dyn_cast<EmbedSubscriptExpr>(Args[i]->IgnoreParenImpCasts())) {
+      PPEmbedExpr *PPEmbed = EmbedS->getEmbed();
+      auto It = PPEmbed->begin() + EmbedS->getBegin();
+      const unsigned NumOfEls = EmbedS->getDataElementCount();
+      for (unsigned EmbedIndex = 0; EmbedIndex < NumOfEls; ++EmbedIndex, ++It) {
+        Emit(*It, ArrayIndex);
         ArrayIndex++;
         if (ArrayIndex >= NumInitElements)
           break;
       }
     } else {
-      Emit(Args[i], ArrayIndex, false);
+      Emit(Args[i], ArrayIndex);
       ArrayIndex++;
     }
   }

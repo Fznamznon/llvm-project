@@ -31,6 +31,7 @@
 #include "llvm/IR/Function.h"
 #include "llvm/IR/GlobalVariable.h"
 #include <optional>
+#include <iostream>
 using namespace clang;
 using namespace CodeGen;
 
@@ -1060,6 +1061,24 @@ public:
     return Visit(E->getInitializer(), T);
   }
 
+  llvm::Constant *ProduceIntToIntCast(Expr *E, QualType DestType) {
+    QualType FromType = E->getType();
+    // See also HandleIntToIntCast in ExprConstant.cpp
+    if (FromType->isIntegerType())
+      if (llvm::Constant *C = Visit(E, FromType))
+        if (auto *CI = dyn_cast<llvm::ConstantInt>(C)) {
+          unsigned SrcWidth = CGM.getContext().getIntWidth(FromType);
+          unsigned DstWidth = CGM.getContext().getIntWidth(DestType);
+          if (DstWidth == SrcWidth)
+            return CI;
+          llvm::APInt A = FromType->isSignedIntegerType()
+                              ? CI->getValue().sextOrTrunc(DstWidth)
+                              : CI->getValue().zextOrTrunc(DstWidth);
+          return llvm::ConstantInt::get(CGM.getLLVMContext(), A);
+        }
+    return nullptr;
+  }
+
   llvm::Constant *VisitCastExpr(CastExpr *E, QualType destType) {
     if (const auto *ECE = dyn_cast<ExplicitCastExpr>(E))
       CGM.EmitExplicitCastExprType(ECE, Emitter.CGF);
@@ -1250,6 +1269,16 @@ public:
     assert(CAT && "can't emit array init for non-constant-bound array");
     unsigned NumInitElements = ILE->getNumInits();
     unsigned NumElements = CAT->getSize().getZExtValue();
+    for (const auto *Init : ILE->inits()) {
+      if (const auto *Embed =
+              dyn_cast<EmbedSubscriptExpr>(Init->IgnoreParenImpCasts())) {
+        NumInitElements += Embed->getDataElementCount() - 1;
+        if (NumInitElements > NumElements) {
+          NumInitElements = NumElements;
+          break;
+        }
+      }
+    }
 
     // Initialising an array requires us to automatically
     // initialise any elements that have not been initialised explicitly
@@ -1267,22 +1296,53 @@ public:
 
     // Copy initializer elements.
     SmallVector<llvm::Constant*, 16> Elts;
-    if (fillC && fillC->isNullValue())
+    if (fillC && fillC->isNullValue()) {
       Elts.reserve(NumInitableElts + 1);
-    else
+      std::cout << NumInitableElts + 1<< std::endl;
+    } else {
       Elts.reserve(NumElements);
+      std::cout << NumElements << std::endl;
+    }
+
 
     llvm::Type *CommonElementType = nullptr;
-    for (unsigned i = 0; i < NumInitableElts; ++i) {
-      Expr *Init = ILE->getInit(i);
-      llvm::Constant *C = Emitter.tryEmitPrivateForMemory(Init, EltType);
+    auto Emit = [&](Expr *Init, bool FirstElement, bool EmbedInit) {
+      llvm::Constant *C = nullptr;
+      if (EmbedInit &&
+          !CGM.getContext().hasSameType(Init->getType(), CAT->getElementType()))
+        C = ProduceIntToIntCast(Init, CAT->getElementType());
+      else
+        C = Emitter.tryEmitPrivateForMemory(Init, EltType);
       if (!C)
-        return nullptr;
-      if (i == 0)
+        return false;
+      if (FirstElement)
         CommonElementType = C->getType();
       else if (C->getType() != CommonElementType)
         CommonElementType = nullptr;
       Elts.push_back(C);
+      return true;
+    };
+    uint64_t ArrayIndex = 0;
+    for (unsigned i = 0; i < ILE->getNumInits(); ++i) {
+      Expr *Init = ILE->getInit(i);
+      if (auto *EmbedS =
+              dyn_cast<EmbedSubscriptExpr>(Init->IgnoreParenImpCasts())) {
+        PPEmbedExpr *PPEmbed = EmbedS->getEmbed();
+        auto It = PPEmbed->begin() + EmbedS->getBegin();
+        const unsigned NumOfEls = EmbedS->getDataElementCount();
+        for (unsigned EmbedIndex = 0; EmbedIndex < NumOfEls;
+             ++EmbedIndex, ++It) {
+          if (!Emit(*It, ArrayIndex == 0, true))
+            return nullptr;
+          ArrayIndex++;
+          if (ArrayIndex >= NumInitElements)
+            break;
+        }
+      } else {
+        if(!Emit(Init, ArrayIndex == 0, false))
+          return nullptr;
+        ArrayIndex++;
+      }
     }
 
     llvm::ArrayType *Desired =
