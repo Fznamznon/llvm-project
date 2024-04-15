@@ -2114,7 +2114,7 @@ void InitListChecker::CheckArrayType(const InitializedEntity &Entity,
     CheckSubElementType(ElementEntity, IList, elementType, Index,
                         StructuredList, StructuredIndex);
     ++elementIndex;
-    if (CurEmbed || isa<PPEmbedExpr>(Init)) {
+    if ((CurEmbed || isa<PPEmbedExpr>(Init)) && elementType->isScalarType()) {
       if (CurEmbed) {
         elementIndex =
             elementIndex + CurEmbedIndex - EmbedElementIndexBeforeInit - 1;
