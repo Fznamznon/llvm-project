@@ -31,7 +31,6 @@
 #include "llvm/IR/Function.h"
 #include "llvm/IR/GlobalVariable.h"
 #include <optional>
-#include <iostream>
 using namespace clang;
 using namespace CodeGen;
 
@@ -1298,10 +1297,8 @@ public:
     SmallVector<llvm::Constant*, 16> Elts;
     if (fillC && fillC->isNullValue()) {
       Elts.reserve(NumInitableElts + 1);
-      std::cout << NumInitableElts + 1<< std::endl;
     } else {
       Elts.reserve(NumElements);
-      std::cout << NumElements << std::endl;
     }
 
 

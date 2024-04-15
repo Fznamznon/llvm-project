@@ -966,9 +966,22 @@ bool ByteCodeExprGen<Emitter>::VisitInitListExpr(const InitListExpr *E) {
   if (T->isArrayType()) {
     unsigned ElementIndex = 0;
     for (const Expr *Init : E->inits()) {
-      if (!this->visitArrayElemInit(ElementIndex, Init))
-        return false;
-      ++ElementIndex;
+      if (auto *EmbedS =
+              dyn_cast<EmbedSubscriptExpr>(Init->IgnoreParenImpCasts())) {
+        PPEmbedExpr *PPEmbed = EmbedS->getEmbed();
+        auto It = PPEmbed->begin() + EmbedS->getBegin();
+        const unsigned NumOfEls = EmbedS->getDataElementCount();
+        for (unsigned EmbedIndex = 0; EmbedIndex < NumOfEls;
+             ++EmbedIndex, ++It) {
+          if (!this->visitArrayElemInit(ElementIndex, *It))
+            return false;
+          ++ElementIndex;
+        }
+      } else {
+        if (!this->visitArrayElemInit(ElementIndex, Init))
+          return false;
+        ++ElementIndex;
+      }
     }
 
     // Expand the filler expression.
@@ -1063,6 +1076,16 @@ bool ByteCodeExprGen<Emitter>::VisitPPEmbedExpr(const PPEmbedExpr *E) {
     if (!this->visit(IL))
       return false;
   }
+  return true;
+}
+
+template <class Emitter>
+bool ByteCodeExprGen<Emitter>::VisitEmbedSubscriptExpr(
+    const EmbedSubscriptExpr *E) {
+  PPEmbedExpr *PPEmbed = E->getEmbed();
+  auto It = PPEmbed->begin() + E->getBegin();
+  if (!this->Visit(*It))
+      return false;
   return true;
 }
 

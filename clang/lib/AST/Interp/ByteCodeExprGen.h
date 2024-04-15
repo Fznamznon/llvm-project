@@ -119,6 +119,7 @@ public:
   bool VisitCXXRewrittenBinaryOperator(const CXXRewrittenBinaryOperator *E);
   bool VisitPseudoObjectExpr(const PseudoObjectExpr *E);
   bool VisitPPEmbedExpr(const PPEmbedExpr *E);
+  bool VisitEmbedSubscriptExpr(const EmbedSubscriptExpr *E);
 
 protected:
   bool visitExpr(const Expr *E) override;

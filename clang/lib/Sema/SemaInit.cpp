@@ -9114,11 +9114,18 @@ ExprResult InitializationSequence::Perform(Sema &S,
         }
       }
       Expr *Init = CurInit.get();
-      if (auto *Embed = dyn_cast<PPEmbedExpr>(Init)) {
+      if (auto *Embed = dyn_cast<PPEmbedExpr>(Init->IgnoreParenImpCasts())) {
         if (Embed->getDataElementCount(S.Context) == 1) {
           // Expand the list in-place immediately, let the natural work take
           // hold
           Init = S.ExpandSinglePPEmbedExpr(Embed);
+        } else {
+          // Whee, this is a comma expression! However, we don't need to retain
+          // it as such because the comma expression results are the right-most
+          // operand. So we'll get that value and expand it as a single value.
+          Init = new (S.Context) EmbedSubscriptExpr(
+              Embed->getType(), Embed,
+              Embed->getDataElementCount(S.Context) - 1, /*ElsCount*/ 1);
         }
       }
 
