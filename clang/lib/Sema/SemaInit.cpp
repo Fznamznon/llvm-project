@@ -1731,15 +1731,9 @@ void InitListChecker::CheckScalarType(const InitializedEntity &Entity,
 
   if (Result.isInvalid())
     hadError = true; // types weren't compatible.
-  else {
+  else
     ResultExpr = Result.getAs<Expr>();
 
-    if (ResultExpr != expr && !VerifyOnly) {
-      // The type was promoted, update initializer list.
-      // FIXME: Why are we updating the syntactic init list?
-      // IList->setInit(Index, ResultExpr);
-    }
-  }
   UpdateStructuredListElement(StructuredList, StructuredIndex, ResultExpr);
   if (!CurEmbed)
     ++Index;

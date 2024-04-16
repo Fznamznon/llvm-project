@@ -2675,8 +2675,6 @@ void TextNodeDumper::VisitOpenACCConstructStmt(const OpenACCConstructStmt *S) {
 }
 
 void TextNodeDumper::VisitEmbedSubscriptExpr(const EmbedSubscriptExpr *S) {
-  //OS << "begin " << S->getBegin();
-  //OS << "numofelements " << S->getDataElementCount();
   AddChild("begin", [=] { OS << S->getBegin(); });
   AddChild("number of elements", [=] { OS << S->getDataElementCount(); });
   AddChild("embed", [=] { Visit(S->getEmbed()); });

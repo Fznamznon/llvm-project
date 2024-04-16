@@ -4831,12 +4831,9 @@ public:
   template <bool Const>
   class ChildElementIter
       : public llvm::iterator_facade_base<
-            // FIXME: it seems reasonable to make this a random access iterator
-            // instead, but all current access patterns are a linear walk over
-            // the contents, so it's being left for follow-up work if needed.
             ChildElementIter<Const>, std::random_access_iterator_tag,
             std::conditional_t<Const, const IntegerLiteral *,
-                               IntegerLiteral *>, unsigned> {
+                               IntegerLiteral *>> {
     friend class PPEmbedExpr;
 
     PPEmbedExpr *PPExpr = nullptr;
