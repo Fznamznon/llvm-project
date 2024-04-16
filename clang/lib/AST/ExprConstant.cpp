@@ -7711,14 +7711,8 @@ public:
   bool VisitEmbedSubscriptExpr(const EmbedSubscriptExpr *E) {
     PPEmbedExpr *PPEmbed = E->getEmbed();
     auto It = PPEmbed->begin() + E->getBegin();
-    const unsigned NumOfEls = E->getDataElementCount();
-    for (unsigned EmbedIndex = 0; EmbedIndex < NumOfEls; ++EmbedIndex, ++It) {
-      // This will set Resulting APValue to the last element we see in this
-      // loop, so this implementation evaluates EmbedSubscriptExpr that refers
-      // to a single integer out of the box.
-      if (!StmtVisitorTy::Visit(*It))
-        return false;
-    }
+    if (!StmtVisitorTy::Visit(*It))
+      return false;
     return true;
   }
 
