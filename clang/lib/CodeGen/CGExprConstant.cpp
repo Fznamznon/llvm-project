@@ -1303,7 +1303,7 @@ public:
 
 
     llvm::Type *CommonElementType = nullptr;
-    auto Emit = [&](Expr *Init, bool FirstElement, bool EmbedInit) {
+    auto Emit = [&](Expr *Init, unsigned ArrayIndex, bool EmbedInit) {
       llvm::Constant *C = nullptr;
       if (EmbedInit &&
           !CGM.getContext().hasSameType(Init->getType(), CAT->getElementType()))
@@ -1312,31 +1312,23 @@ public:
         C = Emitter.tryEmitPrivateForMemory(Init, EltType);
       if (!C)
         return false;
-      if (FirstElement)
+      if (ArrayIndex == 0)
         CommonElementType = C->getType();
       else if (C->getType() != CommonElementType)
         CommonElementType = nullptr;
       Elts.push_back(C);
       return true;
     };
-    uint64_t ArrayIndex = 0;
+    unsigned ArrayIndex = 0;
     for (unsigned i = 0; i < ILE->getNumInits(); ++i) {
       Expr *Init = ILE->getInit(i);
       if (auto *EmbedS =
               dyn_cast<EmbedSubscriptExpr>(Init->IgnoreParenImpCasts())) {
-        PPEmbedExpr *PPEmbed = EmbedS->getEmbed();
-        auto It = PPEmbed->begin() + EmbedS->getBegin();
-        const unsigned NumOfEls = EmbedS->getDataElementCount();
-        for (unsigned EmbedIndex = 0; EmbedIndex < NumOfEls;
-             ++EmbedIndex, ++It) {
-          if (!Emit(*It, ArrayIndex == 0, true))
-            return nullptr;
-          ArrayIndex++;
-          if (ArrayIndex >= NumInitElements)
-            break;
-        }
+        if (!EmbedS->doForEachDataElement(Emit, ArrayIndex,
+                                          /*EmbedInit=*/true))
+          return nullptr;
       } else {
-        if(!Emit(Init, ArrayIndex == 0, false))
+        if (!Emit(Init, ArrayIndex, /*EmbedInit=*/false))
           return nullptr;
         ArrayIndex++;
       }

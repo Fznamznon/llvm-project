@@ -4923,8 +4923,29 @@ private:
   friend class ASTStmtReader;
 };
 
-/// Represent placeholer for a range inside of data imported by #embed
-/// directive.
+/// Represents a subrange of data imported by #embed directive. Needed to
+/// handle nested initializer lists with #embed directives.
+/// Example:
+///  struct S {
+///    int x, y;
+///  };
+///
+///  struct T {
+///    int x[2];
+///    struct S s;
+///  };
+///
+///  struct T t[] = {
+///  #embed "data" // data contains 10 elements;
+///  };
+/// The resulting semantic form of initializer list will contain (ESE stands
+/// for EmbedSubscriptExpr):
+///  { {ESE(first two data elements), {ESE(3rd element), ESE(4th element) }},
+///  { {ESE(5th and 6th element), {ESE(7th element), ESE(8th element) }},
+///  { {ESE(9th and 10th element), { zeroinitializer }}}
+///
+/// EmbedSubscriptExpr referencing more than element only appear for arrays of
+/// scalars.
 class EmbedSubscriptExpr : public Expr {
   PPEmbedExpr *ReferencedEmbed;
   unsigned Begin;
@@ -4960,6 +4981,20 @@ public:
   }
   const_child_range children() const {
     return const_child_range(const_child_iterator(), const_child_iterator());
+  }
+
+  template <typename Foo, typename... Targs>
+  bool doForEachDataElement(Foo F, unsigned &StartingIndexInArray,
+                            Targs... Fargs) const {
+    PPEmbedExpr *PPEmbed = this->getEmbed();
+    auto It = PPEmbed->begin() + this->getBegin();
+    const unsigned NumOfEls = this->getDataElementCount();
+    for (unsigned EmbedIndex = 0; EmbedIndex < NumOfEls; ++EmbedIndex, ++It) {
+      if (!F(*It, StartingIndexInArray, Fargs...))
+        return false;
+      StartingIndexInArray++;
+    }
+    return true;
   }
 };
 

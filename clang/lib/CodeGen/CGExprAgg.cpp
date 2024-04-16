@@ -610,25 +610,18 @@ void AggExprEmitter::EmitArrayInit(Address DestPtr, llvm::ArrayType *AType,
     LValue elementLV = CGF.MakeAddrLValue(
         Address(element, llvmElementType, elementAlign), elementType);
     EmitInitializationToLValue(Init, elementLV);
+    return true;
 
   };
 
-  uint64_t ArrayIndex = 0;
+  unsigned ArrayIndex = 0;
   // Emit the explicit initializers.
   for (uint64_t i = 0; i != NumInitElements; ++i) {
     if (ArrayIndex >= NumInitElements)
       break;
     if (auto *EmbedS =
             dyn_cast<EmbedSubscriptExpr>(Args[i]->IgnoreParenImpCasts())) {
-      PPEmbedExpr *PPEmbed = EmbedS->getEmbed();
-      auto It = PPEmbed->begin() + EmbedS->getBegin();
-      const unsigned NumOfEls = EmbedS->getDataElementCount();
-      for (unsigned EmbedIndex = 0; EmbedIndex < NumOfEls; ++EmbedIndex, ++It) {
-        Emit(*It, ArrayIndex);
-        ArrayIndex++;
-        if (ArrayIndex >= NumInitElements)
-          break;
-      }
+      EmbedS->doForEachDataElement(Emit, ArrayIndex);
     } else {
       Emit(Args[i], ArrayIndex);
       ArrayIndex++;

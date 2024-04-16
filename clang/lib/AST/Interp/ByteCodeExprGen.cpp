@@ -964,19 +964,17 @@ bool ByteCodeExprGen<Emitter>::VisitInitListExpr(const InitListExpr *E) {
     return this->visitInitList(E->inits(), E);
 
   if (T->isArrayType()) {
+    auto Eval = [&](Expr *Init, unsigned ElemIndex) {
+      if (!visitArrayElemInit(ElemIndex, Init))
+        return false;
+      return true;
+    };
     unsigned ElementIndex = 0;
     for (const Expr *Init : E->inits()) {
       if (auto *EmbedS =
               dyn_cast<EmbedSubscriptExpr>(Init->IgnoreParenImpCasts())) {
-        PPEmbedExpr *PPEmbed = EmbedS->getEmbed();
-        auto It = PPEmbed->begin() + EmbedS->getBegin();
-        const unsigned NumOfEls = EmbedS->getDataElementCount();
-        for (unsigned EmbedIndex = 0; EmbedIndex < NumOfEls;
-             ++EmbedIndex, ++It) {
-          if (!this->visitArrayElemInit(ElementIndex, *It))
-            return false;
-          ++ElementIndex;
-        }
+        if (!EmbedS->doForEachDataElement(Eval, ElementIndex))
+          return false;
       } else {
         if (!this->visitArrayElemInit(ElementIndex, Init))
           return false;

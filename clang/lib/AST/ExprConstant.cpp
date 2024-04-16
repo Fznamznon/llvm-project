@@ -11107,10 +11107,6 @@ bool ArrayExprEvaluator::VisitCXXParenListOrInitListExpr(
 
   unsigned NumEltsToInit = Args.size();
   unsigned NumElts = CAT->getSize().getZExtValue();
-  LLVM_DEBUG(llvm::dbgs() << "The number of elements to initialize: "
-                          << NumEltsToInit << ".\n");
-  LLVM_DEBUG(llvm::dbgs() << "The number of elements: "
-                          << NumElts << ".\n");
 
   // If the initializer might depend on the array index, run it for each
   // array element.
@@ -11145,7 +11141,7 @@ bool ArrayExprEvaluator::VisitCXXParenListOrInitListExpr(
 
   LValue Subobject = This;
   Subobject.addArray(Info, ExprToVisit, CAT);
-  auto Eval = [&](const Expr *Init, unsigned ArrayIndex, bool EmbedInit) {
+  auto Eval = [&](const Expr *Init, unsigned ArrayIndex) {
     LLVM_DEBUG(llvm::dbgs() << "Initializing element : "
                             << ArrayIndex << ".\n");
     if (!EvaluateInPlace(Result.getArrayInitializedElt(ArrayIndex), Info,
@@ -11156,7 +11152,8 @@ bool ArrayExprEvaluator::VisitCXXParenListOrInitListExpr(
         return false;
       Success = false;
     }
-    if (EmbedInit &&
+    // Type mismatch may happen in case of #embed handling.
+    if (isa<IntegerLiteral>(Init) &&
         !Info.Ctx.hasSameType(Init->getType(), CAT->getElementType()))
       Result.getArrayInitializedElt(ArrayIndex).getInt() = HandleIntToIntCast(
           Info, Init, CAT->getElementType(), Init->getType(),
@@ -11170,18 +11167,10 @@ bool ArrayExprEvaluator::VisitCXXParenListOrInitListExpr(
       break;
     if (auto *EmbedS =
             dyn_cast<EmbedSubscriptExpr>(Init->IgnoreParenImpCasts())) {
-      PPEmbedExpr *PPEmbed = EmbedS->getEmbed();
-      auto It = PPEmbed->begin() + EmbedS->getBegin();
-      const unsigned NumOfEls = EmbedS->getDataElementCount();
-      for (unsigned EmbedIndex = 0; EmbedIndex < NumOfEls; ++EmbedIndex, ++It) {
-        if (!Eval(*It, ArrayIndex, true))
-          return false;
-        ArrayIndex++;
-        if (ArrayIndex >= NumEltsToInit)
-          break;
-      }
+      if (!EmbedS->doForEachDataElement(Eval, ArrayIndex))
+        return false;
     } else {
-      if (!Eval(Init, ArrayIndex, false))
+      if (!Eval(Init, ArrayIndex))
         return false;
       ArrayIndex++;
     }
@@ -16220,6 +16209,7 @@ static ICEDiag CheckICE(const Expr* E, const ASTContext &Ctx) {
   case Expr::GNUNullExprClass:
   case Expr::SourceLocExprClass:
   case Expr::PPEmbedExprClass:
+  case Expr::EmbedSubscriptExprClass:
     return NoDiag();
 
   case Expr::PackIndexingExprClass:

@@ -6278,8 +6278,9 @@ void InitializationSequence::InitializeFrom(Sema &S,
       SourceType = Initializer->getType();
       if (auto *Embed = dyn_cast<PPEmbedExpr>(Initializer)) {
         if (Embed->getDataElementCount(S.Context) == 1) {
-          // Expand the list in-place immediately, let the natural work take
-          // hold
+          // Expand single-element embed as pure integer literal.
+          // Otherwise there will be an error.
+          // TODO: why?
           Initializer = S.ExpandSinglePPEmbedExpr(Embed);
         }
       }
