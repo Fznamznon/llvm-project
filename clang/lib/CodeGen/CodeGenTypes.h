@@ -128,6 +128,10 @@ public:
   /// memory representation is usually i8 or i32, depending on the target.
   llvm::Type *ConvertTypeForMem(QualType T, bool ForBitField = false);
 
+  // TODO comments
+  llvm::Type *convertTypeForLoadStore(QualType T, llvm::Type *LLVMTy);
+  bool LLVMTypeLayoutMatchesAST(QualType ASTTy, llvm::Type *LLVMTy);
+
   /// GetFunctionType - Get the LLVM function type for \arg Info.
   llvm::FunctionType *GetFunctionType(const CGFunctionInfo &Info);
 

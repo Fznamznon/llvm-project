@@ -761,6 +761,10 @@ bool ConstStructBuilder::Build(const InitListExpr *ILE, bool AllowOverwrite) {
       if (Field->hasAttr<NoUniqueAddressAttr>())
         AllowOverwrite = true;
     } else {
+      llvm::Type *LoadType = CGM.getTypes().convertTypeForLoadStore(
+          Field->getType(), EltInit->getType());
+      EltInit = llvm::ConstantFoldLoadFromConst(
+          EltInit, LoadType, llvm::APInt::getZero(32), CGM.getDataLayout());
       // Otherwise we have a bitfield.
       if (auto *CI = dyn_cast<llvm::ConstantInt>(EltInit)) {
         if (!AppendBitField(Field, Layout.getFieldOffset(FieldNo), CI,
@@ -862,9 +866,15 @@ bool ConstStructBuilder::Build(const APValue &Val, const RecordDecl *RD,
       if (Field->hasAttr<NoUniqueAddressAttr>())
         AllowOverwrite = true;
     } else {
+      llvm::Type *LoadType = CGM.getTypes().convertTypeForLoadStore(
+          Field->getType(), EltInit->getType());
       // Otherwise we have a bitfield.
-      if (!AppendBitField(*Field, Layout.getFieldOffset(FieldNo) + OffsetBits,
-                          cast<llvm::ConstantInt>(EltInit), AllowOverwrite))
+      if (!AppendBitField(
+              *Field, Layout.getFieldOffset(FieldNo) + OffsetBits,
+              cast<llvm::ConstantInt>(llvm::ConstantFoldLoadFromConst(
+                  EltInit, LoadType, llvm::APInt::getZero(32),
+                  CGM.getDataLayout())),
+              AllowOverwrite))
         return false;
     }
   }
@@ -1774,8 +1784,8 @@ llvm::Constant *ConstantEmitter::emitForMemory(CodeGenModule &CGM,
     return Res;
   }
 
-  if (const auto *BIT = destType->getAs<BitIntType>()) {
-    if (BIT->getNumBits() > 128) {
+  if (destType->isBitIntType()) {
+    if (!CGM.getTypes().LLVMTypeLayoutMatchesAST(destType, C->getType())) {
       // Long _BitInt has array of bytes as in-memory type.
       ConstantAggregateBuilder Builder(CGM);
       llvm::Type *DesiredTy = CGM.getTypes().ConvertTypeForMem(destType);

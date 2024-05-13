@@ -115,13 +115,38 @@ llvm::Type *CodeGenTypes::ConvertTypeForMem(QualType T, bool ForBitField) {
                                   (unsigned)Context.getTypeSize(T));
 
   if (const auto *BIT = T->getAs<BitIntType>()) {
-    if (BIT->getNumBits() > 128)
+    if (!LLVMTypeLayoutMatchesAST(T, R)) {
+      // T->dump();
       R = llvm::ArrayType::get(CGM.Int8Ty,
-                               (unsigned)Context.getTypeSize(T) / 8);
+                               Context.getTypeSizeInChars(T).getQuantity());
+    }
   }
 
   // Else, don't map it.
   return R;
+}
+
+bool CodeGenTypes::LLVMTypeLayoutMatchesAST(QualType ASTTy,
+                                            llvm::Type *LLVMTy) {
+  CharUnits ASTSize = Context.getTypeSizeInChars(ASTTy);
+  CharUnits LLVMSize =
+      CharUnits::fromQuantity(getDataLayout().getTypeAllocSize(LLVMTy));
+  return ASTSize == LLVMSize;
+}
+
+llvm::Type *CodeGenTypes::convertTypeForLoadStore(QualType T,
+                                                  llvm::Type *LLVMTy) {
+  if (!T->isBitIntType() && LLVMTy->isIntegerTy(1))
+    return llvm::IntegerType::get(getLLVMContext(),
+                                  (unsigned)Context.getTypeSize(T));
+
+  if (T->isBitIntType()) {
+    llvm::Type *R = ConvertType(T);
+    if (!LLVMTypeLayoutMatchesAST(T, R))
+      return llvm::Type::getIntNTy(
+          getLLVMContext(), Context.getTypeSizeInChars(T).getQuantity() * 8);
+  }
+  return LLVMTy;
 }
 
 /// isRecordLayoutComplete - Return true if the specified type is already

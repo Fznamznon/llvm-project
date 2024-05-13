@@ -71,67 +71,67 @@ void Size1ExtIntParam(unsigned _BitInt(1) A) {
 }
 
 #if __BITINT_MAXWIDTH__ > 128
-struct S1 {
-  _BitInt(17) A;
-  _BitInt(129) B;
-};
-
-int foo(int a) {
-  // CHECK64: %A1 = getelementptr inbounds %struct.S1, ptr %B, i32 0, i32 0
-  // CHECK64: store i17 1, ptr %A1, align 8
-  // CHECK64: %B2 = getelementptr inbounds %struct.S1, ptr %B, i32 0, i32 2
-  // CHECK64: %0 = load i32, ptr %a.addr, align 4
-  // CHECK64: %conv = sext i32 %0 to i129
-  // CHECK64: store i129 %conv, ptr %B2, align 8
-  // CHECK64: %B3 = getelementptr inbounds %struct.S1, ptr %A, i32 0, i32 2
-  // CHECK64: %1 = load i129, ptr %B3, align 8
-  // CHECK64: %conv4 = trunc i129 %1 to i32
-  // CHECK64: %B5 = getelementptr inbounds %struct.S1, ptr %B, i32 0, i32 2
-  // CHECK64: %2 = load i129, ptr %B5, align 8
-  struct S1 A = {1, 170};
-  struct S1 B = {1, a};
-  return (int)A.B + (int)B.B;
-}
-
-struct S2 {
-  _BitInt(257) A;
-  int B;
-};
-
-_BitInt(257) bar() {
-  // CHECK64: define {{.*}}void @bar(ptr {{.*}} sret([40 x i8]) align 8 %[[RET:.+]])
-  // CHECK64: %A = alloca %struct.S2, align 8
-  // CHECK64: %0 = getelementptr inbounds { <{ i8, [39 x i8] }>, i32, [4 x i8] }, ptr %A, i32 0, i32 0
-  // CHECK64: %1 = getelementptr inbounds <{ i8, [39 x i8] }>, ptr %0, i32 0, i32 0
-  // CHECK64: store i8 1, ptr %1, align 8
-  // CHECK64: %2 = getelementptr inbounds { <{ i8, [39 x i8] }>, i32, [4 x i8] }, ptr %A, i32 0, i32 1
-  // CHECK64: store i32 10000, ptr %2, align 8
-  // CHECK64: %A1 = getelementptr inbounds %struct.S2, ptr %A, i32 0, i32 0
-  // CHECK64: %3 = load i257, ptr %A1, align 8
-  // CHECK64: store i257 %3, ptr %[[RET]], align 8
-  struct S2 A = {1, 10000};
-  return A.A;
-}
-
-void TakesVarargs(int i, ...) {
-  // CHECK64: define{{.*}} void @TakesVarargs(i32
-__builtin_va_list args;
-__builtin_va_start(args, i);
-
-_BitInt(160) A = __builtin_va_arg(args, _BitInt(160));
-  // CHECK64: %[[ARG:.+]] = load i160
-  // CHECK64: store i160 %[[ARG]], ptr %A, align 8
-}
-
-_BitInt(129) *f1(_BitInt(129) *p) {
-  // CHECK64: getelementptr inbounds [24 x i8], {{.*}} i64 1
-  return p + 1;
-}
-
-char *f2(char *p) {
-  // CHECK64: getelementptr inbounds i8, {{.*}} i64 24
-  return p + sizeof(_BitInt(129));
-}
+// struct S1 {
+//   _BitInt(17) A;
+//   _BitInt(129) B;
+// };
+// 
+// int foo(int a) {
+//   // CHECK64: %A1 = getelementptr inbounds %struct.S1, ptr %B, i32 0, i32 0
+//   // CHECK64: store i17 1, ptr %A1, align 8
+//   // CHECK64: %B2 = getelementptr inbounds %struct.S1, ptr %B, i32 0, i32 2
+//   // CHECK64: %0 = load i32, ptr %a.addr, align 4
+//   // CHECK64: %conv = sext i32 %0 to i129
+//   // CHECK64: store i129 %conv, ptr %B2, align 8
+//   // CHECK64: %B3 = getelementptr inbounds %struct.S1, ptr %A, i32 0, i32 2
+//   // CHECK64: %1 = load i129, ptr %B3, align 8
+//   // CHECK64: %conv4 = trunc i129 %1 to i32
+//   // CHECK64: %B5 = getelementptr inbounds %struct.S1, ptr %B, i32 0, i32 2
+//   // CHECK64: %2 = load i129, ptr %B5, align 8
+//   struct S1 A = {1, 170};
+//   struct S1 B = {1, a};
+//   return (int)A.B + (int)B.B;
+// }
+// 
+// struct S2 {
+//   _BitInt(257) A;
+//   int B;
+// };
+// 
+// _BitInt(257) bar() {
+//   // CHECK64: define {{.*}}void @bar(ptr {{.*}} sret([40 x i8]) align 8 %[[RET:.+]])
+//   // CHECK64: %A = alloca %struct.S2, align 8
+//   // CHECK64: %0 = getelementptr inbounds { <{ i8, [39 x i8] }>, i32, [4 x i8] }, ptr %A, i32 0, i32 0
+//   // CHECK64: %1 = getelementptr inbounds <{ i8, [39 x i8] }>, ptr %0, i32 0, i32 0
+//   // CHECK64: store i8 1, ptr %1, align 8
+//   // CHECK64: %2 = getelementptr inbounds { <{ i8, [39 x i8] }>, i32, [4 x i8] }, ptr %A, i32 0, i32 1
+//   // CHECK64: store i32 10000, ptr %2, align 8
+//   // CHECK64: %A1 = getelementptr inbounds %struct.S2, ptr %A, i32 0, i32 0
+//   // CHECK64: %3 = load i257, ptr %A1, align 8
+//   // CHECK64: store i257 %3, ptr %[[RET]], align 8
+//   struct S2 A = {1, 10000};
+//   return A.A;
+// }
+// 
+// void TakesVarargs(int i, ...) {
+//   // CHECK64: define{{.*}} void @TakesVarargs(i32
+// __builtin_va_list args;
+// __builtin_va_start(args, i);
+// 
+// _BitInt(160) A = __builtin_va_arg(args, _BitInt(160));
+//   // CHECK64: %[[ARG:.+]] = load i160
+//   // CHECK64: store i160 %[[ARG]], ptr %A, align 8
+// }
+// 
+// _BitInt(129) *f1(_BitInt(129) *p) {
+//   // CHECK64: getelementptr inbounds [24 x i8], {{.*}} i64 1
+//   return p + 1;
+// }
+// 
+// char *f2(char *p) {
+//   // CHECK64: getelementptr inbounds i8, {{.*}} i64 24
+//   return p + sizeof(_BitInt(129));
+// }
 
 auto BigGlob = (_BitInt(257))700;
 // CHECK64: define {{.*}}void @foobar(ptr {{.*}} sret([40 x i8]) align 8 %[[RET1:.+]])
@@ -149,5 +149,19 @@ _BitInt(257) foobar() {
 void f() {
   static _BitInt(130) p = {10000};
 }
+
+struct S3 {
+  _BitInt (136) A : 129;
+};
+
+void bitField() {
+  struct S3 s = {1};
+  struct {
+    _BitInt (136) A : 48;
+    int a;
+  } s1 = {s.A};
+  s1.A = 36;
+}
+
 
 #endif

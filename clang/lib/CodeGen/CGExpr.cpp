@@ -1989,13 +1989,14 @@ llvm::Value *CodeGenFunction::EmitLoadOfScalar(Address Addr, bool Volatile,
     return EmitAtomicLoad(AtomicLValue, Loc).getScalarVal();
   }
 
-  if (const auto *BIT = Ty->getAs<BitIntType>()) {
-    if (BIT->getNumBits() > 128) {
-      // Long _BitInt has array of bytes as in-memory type.
-      llvm::Type *NewTy = ConvertType(Ty);
-      Addr = Addr.withElementType(NewTy);
-    }
-  }
+  // if (const auto *BIT = Ty->getAs<BitIntType>()) {
+  //   if (BIT->getNumBits() > 128) {
+  //     // Long _BitInt has array of bytes as in-memory type.
+  //     llvm::Type *NewTy = ConvertType(Ty);
+  //   }
+  // }
+  Addr = Addr.withElementType(
+      CGM.getTypes().convertTypeForLoadStore(Ty, Addr.getElementType()));
 
   llvm::LoadInst *Load = Builder.CreateLoad(Addr, Volatile);
   if (isNontemporal) {
@@ -2030,6 +2031,13 @@ llvm::Value *CodeGenFunction::EmitToMemory(llvm::Value *Value, QualType Ty) {
            "wrong value rep of bool");
   }
 
+  if (Ty->isBitIntType() && Value->getType()->isIntegerTy()) {
+    bool Signed = Ty->isSignedIntegerOrEnumerationType();
+    llvm::Type *StoreTy =
+        CGM.getTypes().convertTypeForLoadStore(Ty, Value->getType());
+    return Builder.CreateIntCast(Value, StoreTy, Signed, "storedv");
+  }
+
   return Value;
 }
 
@@ -2050,6 +2058,12 @@ llvm::Value *CodeGenFunction::EmitFromMemory(llvm::Value *Value, QualType Ty) {
     llvm::Type *ValTy = ConvertType(Ty);
     unsigned ValNumElems = cast<llvm::FixedVectorType>(ValTy)->getNumElements();
     return emitBoolVecConversion(V, ValNumElems, "extractvec");
+  }
+
+  if (Ty->isBitIntType()) {
+    llvm::Type *ResTy = ConvertType(Ty);
+    if (!CGM.getTypes().LLVMTypeLayoutMatchesAST(Ty, ResTy))
+      return Builder.CreateTrunc(Value, ResTy, "loadedv");
   }
 
   return Value;
@@ -2473,7 +2487,8 @@ void CodeGenFunction::EmitStoreThroughLValue(RValue Src, LValue Dst,
 void CodeGenFunction::EmitStoreThroughBitfieldLValue(RValue Src, LValue Dst,
                                                      llvm::Value **Result) {
   const CGBitFieldInfo &Info = Dst.getBitFieldInfo();
-  llvm::Type *ResLTy = ConvertTypeForMem(Dst.getType());
+  llvm::Type *ResLTy = CGM.getTypes().convertTypeForLoadStore(
+      Dst.getType(), ConvertType(Dst.getType()));
   Address Ptr = Dst.getBitFieldAddress();
 
   // Get the source value, truncated to the width of the bit-field.
@@ -2541,7 +2556,6 @@ void CodeGenFunction::EmitStoreThroughBitfieldLValue(RValue Src, LValue Dst,
         ResultVal = Builder.CreateAShr(ResultVal, HighBits, "bf.result.ashr");
       }
     }
-
     ResultVal = Builder.CreateIntCast(ResultVal, ResLTy, Info.IsSigned,
                                       "bf.result.cast");
     *Result = EmitFromMemory(ResultVal, Dst.getType());

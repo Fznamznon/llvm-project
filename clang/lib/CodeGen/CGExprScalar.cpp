@@ -5348,12 +5348,14 @@ Value *ScalarExprEmitter::VisitVAArgExpr(VAArgExpr *VE) {
     return llvm::UndefValue::get(ArgTy);
   }
 
-  if (const auto *BIT = Ty->getAs<BitIntType>()) {
-    if (BIT->getNumBits() > 128) {
-      // Long _BitInt has array of bytes as in-memory type.
-      ArgPtr = ArgPtr.withElementType(ArgTy);
-    }
-  }
+  // if (const auto *BIT = Ty->getAs<BitIntType>()) {
+  //   if (BIT->getNumBits() > 128) {
+  //     // Long _BitInt has array of bytes as in-memory type.
+  //     ArgPtr = ArgPtr.withElementType(ArgTy);
+  //   }
+  // }
+  ArgPtr = ArgPtr.withElementType(
+      CGF.CGM.getTypes().convertTypeForLoadStore(Ty, ArgPtr.getElementType()));
 
   // FIXME Volatility.
   llvm::Value *Val = Builder.CreateLoad(ArgPtr);
