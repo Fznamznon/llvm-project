@@ -2363,7 +2363,7 @@ Parser::DeclGroupPtrTy Parser::ParseOpenMPDeclarativeDirectiveWithExtDecl(
   case OMPD_end_declare_target: {
     if (!Actions.OpenMP().isInOpenMPDeclareTargetContext()) {
       Diag(Tok, diag::err_omp_unexpected_directive)
-          << 1 << getOpenMPDirectiveName(DKind);
+          << getOpenMPDirectiveName(DKind);
       break;
     }
     const SemaOpenMP::DeclareTargetContextInfo &DTCI =
@@ -2373,7 +2373,7 @@ Parser::DeclGroupPtrTy Parser::ParseOpenMPDeclarativeDirectiveWithExtDecl(
   }
   case OMPD_assume: {
     Diag(Tok, diag::err_omp_unexpected_directive)
-        << 1 << getOpenMPDirectiveName(DKind);
+        << getOpenMPDirectiveName(DKind);
     break;
   }
   case OMPD_unknown:
@@ -2386,7 +2386,7 @@ Parser::DeclGroupPtrTy Parser::ParseOpenMPDeclarativeDirectiveWithExtDecl(
     case Category::Subsidiary:
     case Category::Utility:
       Diag(Tok, diag::err_omp_unexpected_directive)
-          << 1 << getOpenMPDirectiveName(DKind);
+          << getOpenMPDirectiveName(DKind);
       break;
     case Category::Declarative:
     case Category::Informational:
@@ -2965,7 +2965,7 @@ StmtResult Parser::ParseOpenMPDeclarativeOrExecutableDirective(
 
     if (HasImplicitMappings) {
       Diag(Tok, diag::err_omp_unexpected_directive)
-          << 1 << getOpenMPDirectiveName(DKind);
+          << getOpenMPDirectiveName(DKind);
       SkipUntil(tok::annot_pragma_openmp_end);
       break;
     }
@@ -2984,7 +2984,7 @@ StmtResult Parser::ParseOpenMPDeclarativeOrExecutableDirective(
   case OMPD_end_declare_variant:
   case OMPD_declare_variant:
     Diag(Tok, diag::err_omp_unexpected_directive)
-        << 1 << getOpenMPDirectiveName(DKind);
+        << getOpenMPDirectiveName(DKind);
     SkipUntil(tok::annot_pragma_openmp_end);
     break;
   case OMPD_assume: {

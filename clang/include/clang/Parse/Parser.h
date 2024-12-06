@@ -173,54 +173,19 @@ class Parser : public CodeCompletionHandler {
   // used as type traits.
   llvm::SmallDenseMap<IdentifierInfo *, tok::TokenKind> RevertibleTypeTraits;
 
-  std::unique_ptr<PragmaHandler> AlignHandler;
-  std::unique_ptr<PragmaHandler> GCCVisibilityHandler;
-  std::unique_ptr<PragmaHandler> OptionsHandler;
-  std::unique_ptr<PragmaHandler> PackHandler;
-  std::unique_ptr<PragmaHandler> MSStructHandler;
-  std::unique_ptr<PragmaHandler> UnusedHandler;
-  std::unique_ptr<PragmaHandler> WeakHandler;
-  std::unique_ptr<PragmaHandler> RedefineExtnameHandler;
-  std::unique_ptr<PragmaHandler> FPContractHandler;
-  std::unique_ptr<PragmaHandler> OpenCLExtensionHandler;
-  std::unique_ptr<PragmaHandler> OpenMPHandler;
-  std::unique_ptr<PragmaHandler> OpenACCHandler;
-  std::unique_ptr<PragmaHandler> PCSectionHandler;
-  std::unique_ptr<PragmaHandler> MSCommentHandler;
-  std::unique_ptr<PragmaHandler> MSDetectMismatchHandler;
-  std::unique_ptr<PragmaHandler> FPEvalMethodHandler;
-  std::unique_ptr<PragmaHandler> FloatControlHandler;
-  std::unique_ptr<PragmaHandler> MSPointersToMembers;
-  std::unique_ptr<PragmaHandler> MSVtorDisp;
-  std::unique_ptr<PragmaHandler> MSInitSeg;
-  std::unique_ptr<PragmaHandler> MSDataSeg;
-  std::unique_ptr<PragmaHandler> MSBSSSeg;
-  std::unique_ptr<PragmaHandler> MSConstSeg;
-  std::unique_ptr<PragmaHandler> MSCodeSeg;
-  std::unique_ptr<PragmaHandler> MSSection;
-  std::unique_ptr<PragmaHandler> MSStrictGuardStackCheck;
-  std::unique_ptr<PragmaHandler> MSRuntimeChecks;
-  std::unique_ptr<PragmaHandler> MSIntrinsic;
-  std::unique_ptr<PragmaHandler> MSFunction;
-  std::unique_ptr<PragmaHandler> MSOptimize;
-  std::unique_ptr<PragmaHandler> MSFenvAccess;
-  std::unique_ptr<PragmaHandler> MSAllocText;
-  std::unique_ptr<PragmaHandler> CUDAForceHostDeviceHandler;
-  std::unique_ptr<PragmaHandler> OptimizeHandler;
-  std::unique_ptr<PragmaHandler> LoopHintHandler;
-  std::unique_ptr<PragmaHandler> UnrollHintHandler;
-  std::unique_ptr<PragmaHandler> NoUnrollHintHandler;
-  std::unique_ptr<PragmaHandler> UnrollAndJamHintHandler;
-  std::unique_ptr<PragmaHandler> NoUnrollAndJamHintHandler;
-  std::unique_ptr<PragmaHandler> FPHandler;
-  std::unique_ptr<PragmaHandler> STDCFenvAccessHandler;
-  std::unique_ptr<PragmaHandler> STDCFenvRoundHandler;
-  std::unique_ptr<PragmaHandler> STDCCXLIMITHandler;
-  std::unique_ptr<PragmaHandler> STDCUnknownHandler;
-  std::unique_ptr<PragmaHandler> AttributePragmaHandler;
-  std::unique_ptr<PragmaHandler> MaxTokensHerePragmaHandler;
-  std::unique_ptr<PragmaHandler> MaxTokensTotalPragmaHandler;
-  std::unique_ptr<PragmaHandler> RISCVPragmaHandler;
+  PragmaHandler* AlignHandler;
+  PragmaHandler* OptionsHandler;
+  PragmaHandler* PackHandler;
+  PragmaHandler* MSVtorDisp;
+
+  PragmaHandler* PCSectionHandler;
+  PragmaHandler* MSCommentHandler;
+  PragmaHandler* MSDetectMismatchHandler;
+  PragmaHandler* FloatControlHandler;
+  PragmaHandler* CUDAForceHostDeviceHandler;
+  PragmaHandler* OptimizeHandler;
+  PragmaHandler* AttributePragmaHandler;
+  PragmaHandler* RISCVPragmaHandler;
 
   std::unique_ptr<CommentHandler> CommentSemaHandler;
 

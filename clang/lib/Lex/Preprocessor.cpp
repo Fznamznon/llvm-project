@@ -184,6 +184,18 @@ Preprocessor::~Preprocessor() {
   // Delete the header search info, if we own it.
   if (OwnsHeaderSearch)
     delete &HeaderInfo;
+
+  RemovePragmaHandler(UnrollHintHandler);
+  RemovePragmaHandler("GCC", UnrollHintHandler);
+  delete UnrollHintHandler;
+  RemovePragmaHandler(NoUnrollHintHandler);
+  RemovePragmaHandler("GCC", NoUnrollHintHandler);
+  delete NoUnrollHintHandler;
+  RemovePragmaHandler("STDC", FPContractHandler);
+  if (getLangOpts().OpenCL) {
+    RemovePragmaHandler("OPENCL", FPContractHandler);
+  }
+  delete FPContractHandler;
 }
 
 void Preprocessor::Initialize(const TargetInfo &Target,

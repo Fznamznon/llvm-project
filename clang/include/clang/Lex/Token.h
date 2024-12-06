@@ -13,6 +13,7 @@
 #ifndef LLVM_CLANG_LEX_TOKEN_H
 #define LLVM_CLANG_LEX_TOKEN_H
 
+#include "clang/Basic/LangOptions.h"
 #include "clang/Basic/SourceLocation.h"
 #include "clang/Basic/TokenKinds.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -345,6 +346,19 @@ struct PragmaLoopHintInfo {
   Token Option;
   ArrayRef<Token> Toks;
 };
+
+/// Used as the annotation value for tok::annot_pragma_fp.
+struct TokFPAnnotValue {
+  enum FlagValues { On, Off, Fast };
+
+  std::optional<LangOptions::FPModeKind> ContractValue;
+  std::optional<LangOptions::FPModeKind> ReassociateValue;
+  std::optional<LangOptions::FPModeKind> ReciprocalValue;
+  std::optional<LangOptions::FPExceptionModeKind> ExceptionsValue;
+  std::optional<LangOptions::FPEvalMethodKind> EvalMethodValue;
+};
+enum OpenCLExtState : char { Disable, Enable, Begin, End };
+typedef std::pair<const IdentifierInfo *, OpenCLExtState> OpenCLExtData;
 } // end namespace clang
 
 #endif // LLVM_CLANG_LEX_TOKEN_H

@@ -1214,6 +1214,9 @@ def warn_pragma_missing_argument : Warning<
   "missing argument to '#pragma %0'%select{|; expected %2}1">, InGroup<IgnoredPragmas>;
 def warn_pragma_invalid_argument : Warning<
   "unexpected argument '%0' to '#pragma %1'%select{|; expected %3}2">, InGroup<IgnoredPragmas>;
+def warn_pragma_expected_integer : Warning<
+  "expected integer between %0 and %1 inclusive in '#pragma %2' - ignored">,
+  InGroup<IgnoredPragmas>;
 
 def err_pragma_misplaced_in_decl : Error<"this pragma cannot appear in %0 declaration">;
 
@@ -1236,16 +1239,6 @@ def warn_pragma_expected_init_seg : Warning<
   "expected 'compiler', 'lib', 'user', or a string literal for the section name in '#pragma %0' - ignored">,
   InGroup<IgnoredPragmas>;
 
-def err_pragma_expected_integer : Error<"expected an integer argument in '#pragma %0'">;
-def warn_pragma_expected_integer : Warning<
-  "expected integer between %0 and %1 inclusive in '#pragma %2' - ignored">,
-  InGroup<IgnoredPragmas>;
-def warn_pragma_ms_struct : Warning<
-  "incorrect use of '#pragma ms_struct on|off' - ignored">,
-  InGroup<IgnoredPragmas>;
-def warn_pragma_ms_fenv_access : Warning<
-  "incorrect use of '#pragma fenv_access (on|off)' - ignored">,
-  InGroup<IgnoredPragmas>;
 def warn_pragma_extra_tokens_at_eol : Warning<
   "extra tokens at end of '#pragma %0' - ignored">,
   InGroup<IgnoredPragmas>;
@@ -1259,14 +1252,14 @@ def warn_pragma_expected_non_wide_string : Warning<
 def err_pragma_missing_argument : Error<
   "missing argument to '#pragma %0'%select{|; expected %2}1">;
 // - #pragma options
+def warn_pragma_align_invalid_option : Warning<
+  "invalid alignment option in '#pragma %select{align|options align}0' - ignored">,
+  InGroup<IgnoredPragmas>;
 def warn_pragma_options_expected_align : Warning<
   "expected 'align' following '#pragma options' - ignored">,
   InGroup<IgnoredPragmas>;
 def warn_pragma_align_expected_equal : Warning<
   "expected '=' following '#pragma %select{align|options align}0' - ignored">,
-  InGroup<IgnoredPragmas>;
-def warn_pragma_align_invalid_option : Warning<
-  "invalid alignment option in '#pragma %select{align|options align}0' - ignored">,
   InGroup<IgnoredPragmas>;
 // - #pragma pack
 def warn_pragma_unsupported_action : Warning<
@@ -1288,10 +1281,6 @@ def warn_pragma_pack_malformed : Warning<
 def warn_pragma_intrinsic_builtin : Warning<
   "%0 is not a recognized builtin%select{|; consider including <intrin.h> to access non-builtin intrinsics}1">,
   InGroup<IgnoredPragmaIntrinsic>;
-// - #pragma unused
-def warn_pragma_unused_expected_var : Warning<
-  "expected '#pragma unused' argument to be a variable name">,
-  InGroup<IgnoredPragmas>;
 // - #pragma init_seg
 def warn_pragma_init_seg_unsupported_target : Warning<
   "'#pragma init_seg' is only supported when targeting a "
@@ -1301,18 +1290,6 @@ def warn_pragma_init_seg_unsupported_target : Warning<
 def err_pragma_file_or_compound_scope : Error<
   "'#pragma %0' can only appear at file scope or at the start of a "
   "compound statement">;
-// - #pragma stdc unknown
-def ext_stdc_pragma_ignored : ExtWarn<"unknown pragma in STDC namespace">,
-   InGroup<UnknownPragmas>;
-// The C standard 7.6.1p2 says "The [FENV_ACCESS] pragma shall occur either
-// outside external declarations or preceding all explicit declarations and
-// statements inside a compound statement.
-def warn_stdc_fenv_round_not_supported :
-   Warning<"pragma STDC FENV_ROUND is not supported">,
-   InGroup<UnknownPragmas>;
-def warn_stdc_unknown_rounding_mode : Warning<
-  "invalid or unsupported rounding mode in '#pragma STDC FENV_ROUND' - ignored">,
-  InGroup<IgnoredPragmas>;
 def warn_pragma_fp_ignored : Warning<
   "'#pragma %0' is not supported on this target - ignored">,
   InGroup<IgnoredPragmas>;
@@ -1331,10 +1308,6 @@ def err_pragma_detect_mismatch_malformed : Error<
 def err_pragma_float_control_malformed : Error<
   "pragma float_control is malformed; use 'float_control({push|pop})' or "
   "'float_control({precise|except}, {on|off} [,push])'">;
-// - #pragma pointers_to_members
-def err_pragma_pointers_to_members_unknown_kind : Error<
-  "unexpected %0, expected to see one of %select{|'best_case', 'full_generality', }1"
-  "'single_inheritance', 'multiple_inheritance', or 'virtual_inheritance'">;
 // - #pragma clang optimize on/off
 def err_pragma_optimize_invalid_argument : Error<
   "unexpected argument '%0' to '#pragma clang optimize'; "
@@ -1414,12 +1387,6 @@ def err_openclcxx_virtual_function : Error<
   "virtual functions are not supported in C++ for OpenCL">;
 
 // OpenACC Support.
-def warn_pragma_acc_ignored
-    : Warning<"unexpected '#pragma acc ...' in program">,
-      InGroup<SourceUsesOpenACC>,
-      DefaultIgnore;
-def err_acc_unexpected_directive
-    : Error<"unexpected OpenACC directive %select{|'#pragma acc %1'}0">;
 def err_acc_invalid_directive
     : Error<"invalid OpenACC directive %select{%1|'%1 %2'}0">;
 def err_acc_invalid_clause : Error<"invalid OpenACC clause %0">;
@@ -1439,8 +1406,8 @@ def err_acc_invalid_reduction_operator
 def err_acc_incorrect_bind_arg : Error<"expected identifier or string literal">;
 
 // OpenMP support.
-def warn_pragma_omp_ignored : Warning<
-  "unexpected '#pragma omp ...' in program">, InGroup<SourceUsesOpenMP>, DefaultIgnore;
+def err_omp_unexpected_directive : Error<
+  "unexpected OpenMP directive '#pragma omp %0'">;
 def warn_omp_extra_tokens_at_eol : Warning<
   "extra tokens at the end of '#pragma omp %0' are ignored">,
   InGroup<ExtraTokens>;
@@ -1452,8 +1419,6 @@ def warn_pragma_expected_colon_r_paren : Warning<
   "missing ':' or ')' after %0 - ignoring">, InGroup<IgnoredPragmas>;
 def err_omp_unknown_directive : Error<
   "expected an OpenMP directive">;
-def err_omp_unexpected_directive : Error<
-  "unexpected OpenMP directive %select{|'#pragma omp %1'}0">;
 def err_omp_expected_punc : Error<
   "expected ',' or ')' in '%0' %select{clause|directive}1">;
 def warn_clause_expected_string : Warning<
@@ -1656,31 +1621,15 @@ def warn_omp_invalid_attribute_for_ompx_attributes : Warning<"'ompx_attribute' c
   "'amdgpu_flat_work_group_size', 'amdgpu_waves_per_eu', and 'launch_bounds'; "
   "%0 is ignored">, InGroup<OpenMPExtensions>;
 
-// Pragma loop support.
 def err_pragma_loop_missing_argument : Error<
   "missing argument; expected %select{an integer value|"
   "'enable'%select{|, 'full'}1%select{|, 'assume_safety'}2 or 'disable'}0">;
-def err_pragma_loop_invalid_option : Error<
-  "%select{invalid|missing}0 option%select{ %1|}0; expected vectorize, "
-  "vectorize_width, interleave, interleave_count, unroll, unroll_count, "
-  "pipeline, pipeline_initiation_interval, vectorize_predicate, or distribute">;
 def err_pragma_loop_invalid_vectorize_option : Error<
   "vectorize_width loop hint malformed; use vectorize_width(X, fixed) or "
   "vectorize_width(X, scalable) where X is an integer, or vectorize_width('fixed' or 'scalable')">;
 def note_pragma_loop_invalid_vectorize_option : Note<
   "vectorize_width loop hint malformed; use vectorize_width(X, fixed) or "
   "vectorize_width(X, scalable) where X is an integer, or vectorize_width('fixed' or 'scalable')">;
-
-def err_pragma_fp_invalid_option : Error<
-  "%select{invalid|missing}0 option%select{ %1|}0; expected 'contract', 'reassociate', 'reciprocal', or 'exceptions'">;
-def err_pragma_fp_invalid_argument : Error<
-  "unexpected argument '%0' to '#pragma clang fp %1'; expected "
-  "%select{"
-  "'fast' or 'on' or 'off'|"
-  "'on' or 'off'|"
-  "'on' or 'off'|"
-  "'ignore', 'maytrap' or 'strict'|"
-  "'source', 'double' or 'extended'}2">;
 
 def err_pragma_invalid_keyword : Error<
   "invalid argument; expected 'enable'%select{|, 'full'}0%select{|, 'assume_safety'}1 or 'disable'">;
@@ -1689,11 +1638,6 @@ def err_pragma_pipeline_invalid_keyword : Error<
 
 // API notes.
 def err_type_unparsed : Error<"unparsed tokens following type">;
-
-// Pragma unroll support.
-def warn_pragma_unroll_cuda_value_in_parens : Warning<
-  "argument to '#pragma unroll' should not be in parentheses in CUDA C/C++">,
-  InGroup<CudaCompat>;
 
 def warn_cuda_attr_lambda_position : Warning<
   "nvcc does not allow '__%0__' to appear after the parameter list in lambdas">,
@@ -1778,10 +1722,6 @@ def err_concept_legacy_bool_keyword : Error<
 def err_placeholder_expected_auto_or_decltype_auto : Error<
   "expected 'auto' or 'decltype(auto)' after concept name">;
 }
-
-def warn_max_tokens : Warning<
-  "the number of preprocessor source tokens (%0) exceeds this token limit (%1)">,
-  InGroup<MaxTokens>, DefaultIgnore;
 
 def warn_max_tokens_total : Warning<
   "the total number of preprocessor source tokens (%0) exceeds the token limit (%1)">,

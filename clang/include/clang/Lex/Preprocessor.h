@@ -276,6 +276,9 @@ class Preprocessor {
   /// Tracks all of the pragmas that the client registered
   /// with this preprocessor.
   std::unique_ptr<PragmaNamespace> PragmaHandlers;
+  PragmaHandler *UnrollHintHandler;
+  PragmaHandler *NoUnrollHintHandler;
+  PragmaHandler *FPContractHandler;
 
   /// Pragma handlers of the original source is stored here during the
   /// parsing of a model file.

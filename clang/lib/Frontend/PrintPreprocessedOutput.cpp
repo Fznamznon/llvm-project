@@ -1108,9 +1108,9 @@ void clang::DoPrintPreprocessedInput(Preprocessor &PP, raw_ostream *OS,
       "#pragma clang", Callbacks,
       /*RequireTokenExpansion=*/PP.getLangOpts().MicrosoftExt));
 
-  PP.AddPragmaHandler(MicrosoftExtHandler.get());
-  PP.AddPragmaHandler("GCC", GCCHandler.get());
-  PP.AddPragmaHandler("clang", ClangHandler.get());
+  // PP.AddPragmaHandler(MicrosoftExtHandler.get());
+  // PP.AddPragmaHandler("GCC", GCCHandler.get());
+  // PP.AddPragmaHandler("clang", ClangHandler.get());
 
   // The tokens after pragma omp need to be expanded.
   //
@@ -1120,7 +1120,7 @@ void clang::DoPrintPreprocessedInput(Preprocessor &PP, raw_ostream *OS,
   std::unique_ptr<UnknownPragmaHandler> OpenMPHandler(
       new UnknownPragmaHandler("#pragma omp", Callbacks,
                                /*RequireTokenExpansion=*/true));
-  PP.AddPragmaHandler("omp", OpenMPHandler.get());
+  // PP.AddPragmaHandler("omp", OpenMPHandler.get());
 
   PP.addPPCallbacks(std::unique_ptr<PPCallbacks>(Callbacks));
 
@@ -1153,8 +1153,8 @@ void clang::DoPrintPreprocessedInput(Preprocessor &PP, raw_ostream *OS,
 
   // Remove the handlers we just added to leave the preprocessor in a sane state
   // so that it can be reused (for example by a clang::Parser instance).
-  PP.RemovePragmaHandler(MicrosoftExtHandler.get());
-  PP.RemovePragmaHandler("GCC", GCCHandler.get());
-  PP.RemovePragmaHandler("clang", ClangHandler.get());
-  PP.RemovePragmaHandler("omp", OpenMPHandler.get());
+  // PP.RemovePragmaHandler(MicrosoftExtHandler.get());
+  // PP.RemovePragmaHandler("GCC", GCCHandler.get());
+  // PP.RemovePragmaHandler("clang", ClangHandler.get());
+  // PP.RemovePragmaHandler("omp", OpenMPHandler.get());
 }

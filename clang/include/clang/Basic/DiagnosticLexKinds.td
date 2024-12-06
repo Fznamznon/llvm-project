@@ -1006,6 +1006,24 @@ def err_dep_source_scanner_unexpected_tokens_at_import : Error<
 
 }
 
+// Language specific pragmas
+// - Generic warnings
+def warn_pp_pragma_expected_lparen : Warning<
+  "missing '(' after '#pragma %0' - ignoring">, InGroup<IgnoredPragmas>;
+def warn_pp_pragma_expected_rparen : Warning<
+  "missing ')' after '#pragma %0' - ignoring">, InGroup<IgnoredPragmas>;
+def warn_pp_pragma_expected_identifier : Warning<
+  "expected identifier in '#pragma %0' - ignored">, InGroup<IgnoredPragmas>;
+def warn_pp_pragma_expected_colon : Warning<
+  "missing ':' after %0 - ignoring">, InGroup<IgnoredPragmas>;
+def warn_pp_pragma_expected_punc : Warning<
+  "expected ')' or ',' in '#pragma %0'">, InGroup<IgnoredPragmas>;
+// - Generic errors
+def err_pp_pragma_missing_argument : Error<
+  "missing argument to '#pragma %0'%select{|; expected %2}1">;
+def err_pp_expected_rparen_after : Error<"expected ')' after '%0'">;
+def err_pp_expected_punc : Error<"expected ')' or ',' after '%0'">;
+
 def err_pp_double_begin_pragma_unsafe_buffer_usage :
 Error<"already inside '#pragma unsafe_buffer_usage'">;
 
@@ -1017,4 +1035,93 @@ Error<"'#pragma unsafe_buffer_usage' was not ended">;
 
 def err_pp_pragma_unsafe_buffer_usage_syntax :
 Error<"expected 'begin' or 'end'">;
+
+// OpenMP support.
+def warn_pragma_omp_ignored : Warning<
+  "unexpected '#pragma omp ...' in program">, InGroup<SourceUsesOpenMP>, DefaultIgnore;
+def err_pp_omp_unexpected_directive : Error<
+  "unexpected OpenMP directive">;
+
+// OpenACC support.
+def warn_pragma_acc_ignored
+    : Warning<"unexpected '#pragma acc ...' in program">,
+      InGroup<SourceUsesOpenACC>,
+      DefaultIgnore;
+def err_pp_acc_unexpected_directive
+    : Error<"unexpected OpenACC directive">;
+
+// - #pragma stdc unknown
+def ext_stdc_pragma_ignored : ExtWarn<"unknown pragma in STDC namespace">,
+   InGroup<UnknownPragmas>;
+def warn_pp_pragma_fp_ignored : Warning<
+  "'#pragma %0' is not supported on this target - ignored">,
+  InGroup<IgnoredPragmas>;
+def warn_stdc_unknown_rounding_mode : Warning<
+  "invalid or unsupported rounding mode in '#pragma STDC FENV_ROUND' - ignored">,
+  InGroup<IgnoredPragmas>;
+
+def err_pragma_expected_integer : Error<"expected an integer argument in '#pragma %0'">;
+
+def warn_pp_pragma_extra_tokens_at_eol : Warning<
+  "extra tokens at end of '#pragma %0' - ignored">,
+  InGroup<IgnoredPragmas>;
+
+def err_pragma_fp_invalid_argument : Error<
+  "unexpected argument '%0' to '#pragma clang fp %1'; expected "
+  "%select{"
+  "'fast' or 'on' or 'off'|"
+  "'on' or 'off'|"
+  "'on' or 'off'|"
+  "'ignore', 'maytrap' or 'strict'|"
+  "'source', 'double' or 'extended'}2">;
+def err_pragma_fp_invalid_option : Error<
+  "%select{invalid|missing}0 option%select{ %1|}0; expected 'contract', 'reassociate', 'reciprocal', or 'exceptions'">;
+
+def warn_max_tokens : Warning<
+  "the number of preprocessor source tokens (%0) exceeds this token limit (%1)">,
+  InGroup<MaxTokens>, DefaultIgnore;
+def warn_pragma_ms_fenv_access : Warning<
+  "incorrect use of '#pragma fenv_access (on|off)' - ignored">,
+  InGroup<IgnoredPragmas>;
+
+// Pragma unroll support.
+def warn_pragma_unroll_cuda_value_in_parens : Warning<
+  "argument to '#pragma unroll' should not be in parentheses in CUDA C/C++">,
+  InGroup<CudaCompat>;
+
+// Pragma loop support.
+def err_pragma_loop_invalid_option : Error<
+  "%select{invalid|missing}0 option%select{ %1|}0; expected vectorize, "
+  "vectorize_width, interleave, interleave_count, unroll, unroll_count, "
+  "pipeline, pipeline_initiation_interval, vectorize_predicate, or distribute">;
+
+// - #pragma unused
+def warn_pragma_unused_expected_var : Warning<
+  "expected '#pragma unused' argument to be a variable name">,
+  InGroup<IgnoredPragmas>;
+
+// OpenCL EXTENSION pragma (OpenCL 1.1 [9.1])
+def warn_pp_pragma_expected_predicate : Warning<
+  "expected %select{'enable', 'disable', 'begin' or 'end'|'disable'}0 - ignoring">, InGroup<IgnoredPragmas>;
+
+def warn_pragma_ms_struct : Warning<
+  "incorrect use of '#pragma ms_struct on|off' - ignored">,
+  InGroup<IgnoredPragmas>;
+
+// - #pragma intrinsic
+def warn_pp_pragma_intrinsic_builtin : Warning<
+  "%0 is not a recognized builtin%select{|; consider including <intrin.h> to access non-builtin intrinsics}1">,
+  InGroup<IgnoredPragmaIntrinsic>;
+
+// The C standard 7.6.1p2 says "The [FENV_ACCESS] pragma shall occur either
+// outside external declarations or preceding all explicit declarations and
+// statements inside a compound statement.
+def warn_stdc_fenv_round_not_supported :
+   Warning<"pragma STDC FENV_ROUND is not supported">,
+   InGroup<UnknownPragmas>;
+
+// - #pragma pointers_to_members
+def err_pragma_pointers_to_members_unknown_kind : Error<
+  "unexpected %0, expected to see one of %select{|'best_case', 'full_generality', }1"
+  "'single_inheritance', 'multiple_inheritance', or 'virtual_inheritance'">;
 }
