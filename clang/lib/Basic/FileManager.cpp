@@ -345,7 +345,9 @@ llvm::Expected<FileEntryRef> FileManager::getFileRef(StringRef Filename,
   UFE->Dir = &DirInfo.getDirEntry();
   UFE->UID = NextFileUID++;
   UFE->UniqueID = Status.getUniqueID();
-  UFE->IsNamedPipe = Status.getType() == llvm::sys::fs::file_type::fifo_file;
+  UFE->IsNamedPipe =
+      Status.getType() == llvm::sys::fs::file_type::fifo_file ||
+      Status.getType() == llvm::sys::fs::file_type::character_file;
   UFE->File = std::move(F);
 
   if (UFE->File) {
@@ -541,13 +543,16 @@ FileManager::getBufferForFile(FileEntryRef FE, bool isVolatile,
 
   uint64_t FileSize = Entry->getSize();
 
-  if (MaybeLimit)
-    FileSize = *MaybeLimit;
-
   // If there's a high enough chance that the file have changed since we
   // got its size, force a stat before opening it.
   if (isVolatile || Entry->isNamedPipe())
     FileSize = -1;
+
+  if (MaybeLimit) {
+    FileSize = *MaybeLimit;
+    if (!Entry->isNamedPipe())
+      FileSize = std::min(FileSize, (uint64_t)Entry->getSize());
+  }
 
   StringRef Filename = FE.getName();
   // If the file is already open, use the open file descriptor.
