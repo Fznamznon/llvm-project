@@ -8379,6 +8379,10 @@ public:
                                                       CXXRecordDecl *RD,
                                                       DeclarationName Name,
                                                       bool Diagnose = true);
+  void FindDeallocationFunctionForMSCVVectorDeletingDestructor(
+      SourceLocation Loc, CXXRecordDecl *RD, DeclarationName Name,
+      FunctionDecl *&ClassOperatorArrayDelete,
+      FunctionDecl *&GlobalOperatorArrayDelete);
 
   /// ActOnCXXDelete - Parsed a C++ 'delete' expression (C++ 5.3.5), as in:
   /// @code ::delete ptr; @endcode

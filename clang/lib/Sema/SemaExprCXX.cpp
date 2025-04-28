@@ -3019,19 +3019,8 @@ bool Sema::FindAllocationFunctions(
       return true;
   }
 
-  // new[] will force emission of vector deleting dtor which needs delete[].
-  bool MaybeVectorDeletingDtor = false;
-  if (Context.getTargetInfo().getCXXABI().isMicrosoft()) {
-    if (AllocElemType->isRecordType() && IsArray) {
-      auto *RD =
-          cast<CXXRecordDecl>(AllocElemType->castAs<RecordType>()->getDecl());
-      CXXDestructorDecl *DD = RD->getDestructor();
-      MaybeVectorDeletingDtor = DD && DD->isVirtual() && !DD->isDeleted();
-    }
-  }
-
   // We don't need an operator delete if we're running under -fno-exceptions.
-  if (!getLangOpts().Exceptions && !MaybeVectorDeletingDtor) {
+  if (!getLangOpts().Exceptions) {
     OperatorDelete = nullptr;
     return false;
   }
@@ -3586,6 +3575,62 @@ Sema::FindUsualDeallocationFunction(SourceLocation StartLoc,
 
   assert(Result.FD && "operator delete missing from global scope?");
   return Result.FD;
+}
+
+// Returns true is a delete[] operator was found, fills TheFunction
+// if it was valid, otherwise fills it with nullptr.
+void Sema::FindDeallocationFunctionForMSCVVectorDeletingDestructor(
+    SourceLocation Loc, CXXRecordDecl *RD, DeclarationName Name,
+    FunctionDecl *&ClassOperatorArrayDelete,
+    FunctionDecl *&GlobalOperatorArrayDelete) {
+  assert(Context.getTargetInfo().getCXXABI().isMicrosoft() &&
+         "should not be called for non-MSVC targets");
+  QualType DeallocType = Context.getRecordType(RD);
+  ImplicitDeallocationParameters IDP = {
+      DeallocType, ShouldUseTypeAwareOperatorNewOrDelete(),
+      AlignedAllocationMode::No, SizedDeallocationMode::No};
+
+  LookupResult Found(*this, Name, Loc, LookupOrdinaryName);
+  // Try to find operator operator delete[] in class scope.
+  LookupQualifiedName(Found, RD);
+
+  Found.suppressDiagnostics();
+
+  if (!isAlignedAllocation(IDP.PassAlignment) &&
+      hasNewExtendedAlignment(*this, Context.getRecordType(RD)))
+    IDP.PassAlignment = AlignedAllocationMode::Yes;
+
+  // C++17 [expr.delete]p10:
+  //   If the deallocation functions have class scope, the one without a
+  //   parameter of type std::size_t is selected.
+  llvm::SmallVector<UsualDeallocFnInfo, 4> Matches;
+  resolveDeallocationOverload(*this, Found, IDP, Loc, &Matches);
+
+  bool HasClassOperatorDelete = false;
+
+  if (Matches.size() == 1) {
+    ClassOperatorArrayDelete = cast<CXXMethodDecl>(Matches[0].FD);
+    if (!CheckDeleteOperator(*this, Loc, Loc, /*Diagnose=*/false,
+                             Found.getNamingClass(), Matches[0].Found,
+                             ClassOperatorArrayDelete)) {
+      ClassOperatorArrayDelete = nullptr;
+    }
+    HasClassOperatorDelete = true;
+  }
+  // Even if ambiguous, return the first found.
+  if (Matches.size() && Matches[0].FD) {
+    ClassOperatorArrayDelete = nullptr;
+    HasClassOperatorDelete = true;
+  } else {
+    HasClassOperatorDelete = false;
+  }
+  IDP.PassAlignment = alignedAllocationModeFromBool(
+      hasNewExtendedAlignment(*this, DeallocType));
+  IDP.PassSize = SizedDeallocationMode::Yes;
+  if (HasClassOperatorDelete)
+    GlobalOperatorArrayDelete = FindUsualDeallocationFunction(Loc, IDP, Name);
+  else
+    ClassOperatorArrayDelete = FindUsualDeallocationFunction(Loc, IDP, Name);
 }
 
 FunctionDecl *Sema::FindDeallocationFunctionForDestructor(SourceLocation Loc,

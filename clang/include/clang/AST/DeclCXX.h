@@ -2853,6 +2853,7 @@ class CXXDestructorDecl : public CXXMethodDecl {
   // of a virtual destructor.
   FunctionDecl *OperatorDelete = nullptr;
   FunctionDecl *OperatorArrayDelete = nullptr;
+  FunctionDecl *OperatorGlobalArrayDelete = nullptr;
   Expr *OperatorDeleteThisArg = nullptr;
 
   CXXDestructorDecl(ASTContext &C, CXXRecordDecl *RD, SourceLocation StartLoc,
@@ -2879,12 +2880,17 @@ public:
 
   void setOperatorDelete(FunctionDecl *OD, Expr *ThisArg);
   void setOperatorArrayDelete(FunctionDecl *OD);
+  void setGlobalOperatorArrayDelete(FunctionDecl *OD);
 
   const FunctionDecl *getOperatorDelete() const {
     return getCanonicalDecl()->OperatorDelete;
   }
 
   const FunctionDecl *getArrayOperatorDelete() const {
+    return getCanonicalDecl()->OperatorArrayDelete;
+  }
+
+  const FunctionDecl *getGlobalArrayOperatorDelete() const {
     return getCanonicalDecl()->OperatorArrayDelete;
   }
 
