@@ -4001,38 +4001,36 @@ void Preprocessor::HandleEmbedDirective(SourceLocation HashLoc, Token &EmbedTok,
     Diag(FilenameTok, diag::err_pp_file_not_found) << Filename;
     return;
   }
-  std::optional<llvm::MemoryBufferRef> MaybeFile;
-  int64_t SizeToRead = 0;
-  if (Params->MaybeLimitParam) {
-    SizeToRead = Params->MaybeLimitParam->Limit;
-    if (SizeToRead && Params->MaybeOffsetParam) {
-      SizeToRead += Params->MaybeOffsetParam->Offset;
-    }
-  }
 
   auto FileOrError = getFileManager().getBufferForFile(
       *MaybeFileRef, false, false,
-      Params->MaybeLimitParam ? std::optional<int64_t>(SizeToRead)
-                              : std::nullopt);
+      Params->MaybeLimitParam
+          ? std::optional<int64_t>(Params->MaybeLimitParam->Limit)
+          : std::nullopt,
+      false,
+      Params->MaybeOffsetParam
+          ? std::optional<int64_t>(Params->MaybeOffsetParam->Offset)
+          : std::nullopt);
+
   if (!FileOrError) {
     // could not find file
     Diag(FilenameTok, diag::err_cannot_open_file)
         << Filename << "a buffer to the contents could not be created";
     return;
   }
-  MaybeFile = (*FileOrError)->getMemBufferRef();
-  StringRef BinaryContents = MaybeFile->getBuffer();
+  auto MaybeFile = (*FileOrError)->getMemBufferRef();
+  StringRef BinaryContents = MaybeFile.getBuffer();
 
   // The order is important between 'offset' and 'limit'; we want to offset
   // first and then limit second; otherwise we may reduce the notional resource
   // size to something too small to offset into.
-  if (Params->MaybeOffsetParam) {
-    // FIXME: just like with the limit() and if_empty() parameters, this loses
-    // source fidelity in the AST; it has no idea that there was an offset
-    // involved.
-    // offsets all the way to the end of the file make for an empty file.
-    BinaryContents = BinaryContents.substr(Params->MaybeOffsetParam->Offset);
-  }
+  // if (Params->MaybeOffsetParam) {
+  //   // FIXME: just like with the limit() and if_empty() parameters, this loses
+  //   // source fidelity in the AST; it has no idea that there was an offset
+  //   // involved.
+  //   // offsets all the way to the end of the file make for an empty file.
+  //   BinaryContents = BinaryContents.substr(Params->MaybeOffsetParam->Offset);
+  // }
 
   if (Callbacks)
     Callbacks->EmbedDirective(HashLoc, Filename, isAngled, MaybeFileRef,

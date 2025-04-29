@@ -322,7 +322,7 @@ public:
 
   llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>>
   getBuffer(const Twine &Name, int64_t FileSize, bool RequiresNullTerminator,
-            bool IsVolatile) override {
+            bool IsVolatile, std::optional<int64_t> Offset) override {
     return std::move(Buffer);
   }
 

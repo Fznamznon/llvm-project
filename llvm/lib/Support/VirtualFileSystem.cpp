@@ -206,10 +206,9 @@ public:
 
   ErrorOr<Status> status() override;
   ErrorOr<std::string> getName() override;
-  ErrorOr<std::unique_ptr<MemoryBuffer>> getBuffer(const Twine &Name,
-                                                   int64_t FileSize,
-                                                   bool RequiresNullTerminator,
-                                                   bool IsVolatile) override;
+  ErrorOr<std::unique_ptr<MemoryBuffer>>
+  getBuffer(const Twine &Name, int64_t FileSize, bool RequiresNullTerminator,
+            bool IsVolatile, std::optional<int64_t> Offset) override;
   std::error_code close() override;
   void setPath(const Twine &Path) override;
 };
@@ -235,8 +234,12 @@ ErrorOr<std::string> RealFile::getName() {
 
 ErrorOr<std::unique_ptr<MemoryBuffer>>
 RealFile::getBuffer(const Twine &Name, int64_t FileSize,
-                    bool RequiresNullTerminator, bool IsVolatile) {
+                    bool RequiresNullTerminator, bool IsVolatile,
+                    std::optional<int64_t> Offset) {
   assert(FD != kInvalidFile && "cannot get buffer for closed file");
+  if (Offset)
+    return MemoryBuffer::getOpenFileSlice(FD, Name, FileSize, Offset.value(),
+                                          IsVolatile);
   return MemoryBuffer::getOpenFile(FD, Name, FileSize, RequiresNullTerminator,
                                    IsVolatile);
 }
@@ -748,7 +751,8 @@ public:
 
   llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>>
   getBuffer(const Twine &Name, int64_t FileSize, bool RequiresNullTerminator,
-            bool IsVolatile) override {
+            bool IsVolatile,
+            std::optional<int64_t> Offset = std::nullopt) override {
     llvm::MemoryBuffer *Buf = Node.getBuffer();
     return llvm::MemoryBuffer::getMemBuffer(
         Buf->getBuffer(), Buf->getBufferIdentifier(), RequiresNullTerminator);
@@ -2523,9 +2527,9 @@ public:
   ErrorOr<std::unique_ptr<llvm::MemoryBuffer>>
 
   getBuffer(const Twine &Name, int64_t FileSize, bool RequiresNullTerminator,
-            bool IsVolatile) override {
+            bool IsVolatile, std::optional<int64_t> Offset) override {
     return InnerFile->getBuffer(Name, FileSize, RequiresNullTerminator,
-                                IsVolatile);
+                                IsVolatile, Offset);
   }
 
   std::error_code close() override { return InnerFile->close(); }

@@ -129,7 +129,8 @@ public:
   /// Get the contents of the file as a \p MemoryBuffer.
   virtual llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>>
   getBuffer(const Twine &Name, int64_t FileSize = -1,
-            bool RequiresNullTerminator = true, bool IsVolatile = false) = 0;
+            bool RequiresNullTerminator = true, bool IsVolatile = false,
+            std::optional<int64_t> Offset = std::nullopt) = 0;
 
   /// Closes the file.
   virtual std::error_code close() = 0;

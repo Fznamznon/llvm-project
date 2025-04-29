@@ -298,7 +298,8 @@ public:
   getBufferForFile(FileEntryRef Entry, bool isVolatile = false,
                    bool RequiresNullTerminator = true,
                    std::optional<int64_t> MaybeLimit = std::nullopt,
-                   bool IsText = true);
+                   bool IsText = true,
+                   std::optional<int64_t> MaybeOffset = std::nullopt);
   llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>>
   getBufferForFile(StringRef Filename, bool isVolatile = false,
                    bool RequiresNullTerminator = true,

@@ -535,7 +535,8 @@ void FileManager::fillRealPathName(FileEntry *UFE, llvm::StringRef FileName) {
 llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>>
 FileManager::getBufferForFile(FileEntryRef FE, bool isVolatile,
                               bool RequiresNullTerminator,
-                              std::optional<int64_t> MaybeLimit, bool IsText) {
+                              std::optional<int64_t> MaybeLimit, bool IsText,
+                              std::optional<int64_t> MaybeOffset) {
   const FileEntry *Entry = &FE.getFileEntry();
   // If the content is living on the file entry, return a reference to it.
   if (Entry->Content)
@@ -557,8 +558,8 @@ FileManager::getBufferForFile(FileEntryRef FE, bool isVolatile,
   StringRef Filename = FE.getName();
   // If the file is already open, use the open file descriptor.
   if (Entry->File) {
-    auto Result = Entry->File->getBuffer(Filename, FileSize,
-                                         RequiresNullTerminator, isVolatile);
+    auto Result = Entry->File->getBuffer(
+        Filename, FileSize, RequiresNullTerminator, isVolatile, MaybeOffset);
     Entry->closeFile();
     return Result;
   }
