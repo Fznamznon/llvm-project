@@ -2024,7 +2024,9 @@ llvm::Value *MicrosoftCXXABI::EmitVirtualDestructorCall(
   CGCallee Callee = CGCallee::forVirtual(CE, GD, This, Ty);
 
   ASTContext &Context = getContext();
-  uint32_t Flags = ((D && D->isArrayForm()) << 1) | (DtorType == Dtor_Deleting);
+  uint32_t Flags = ((D && D->isArrayForm()) << 1) |
+                   (DtorType == Dtor_Deleting) |
+                   ((D && D->isGlobalDelete()) << 2);
   llvm::Value *ImplicitParam = CGF.Builder.getInt32(Flags);
 
   QualType ThisTy;

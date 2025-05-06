@@ -2891,7 +2891,7 @@ public:
   }
 
   const FunctionDecl *getGlobalArrayOperatorDelete() const {
-    return getCanonicalDecl()->OperatorArrayDelete;
+    return getCanonicalDecl()->OperatorGlobalArrayDelete;
   }
 
   Expr *getOperatorDeleteThisArg() const {

@@ -1489,8 +1489,40 @@ static void EmitConditionalArrayDtorCall(const CXXDestructorDecl *DD,
   CGF.EmitBlock(callDeleteBB);
   const CXXDestructorDecl *Dtor = cast<CXXDestructorDecl>(CGF.CurCodeDecl);
   const CXXRecordDecl *ClassDecl = Dtor->getParent();
-  CGF.EmitDeleteCall(Dtor->getArrayOperatorDelete(), allocatedPtr,
-                     CGF.getContext().getTagDeclType(ClassDecl));
+  assert((Dtor->getArrayOperatorDelete() ||
+          Dtor->getGlobalArrayOperatorDelete()) &&
+         "Some operator delete[] should be present");
+  if (!Dtor->getGlobalArrayOperatorDelete()) {
+    CGF.EmitDeleteCall(Dtor->getArrayOperatorDelete(), allocatedPtr,
+                       CGF.getContext().getTagDeclType(ClassDecl));
+  } else {
+    // If global operator[] is set, the class had its own operator delete[].
+    // In that case, check the 4th bit. If it is set, we need to call
+    // ::delete[].
+    llvm::Value *CheckTheBitForGlobDeleteCall = CGF.Builder.CreateAnd(
+        ShouldDeleteCondition, llvm::ConstantInt::get(CondTy, 4));
+
+    llvm::Value *ShouldCallGlobDelete =
+        CGF.Builder.CreateIsNull(CheckTheBitForGlobDeleteCall);
+    llvm::BasicBlock *GlobDelete =
+        CGF.createBasicBlock("dtor.call_glob_delete_after_array_destroy");
+    llvm::BasicBlock *ClassDelete =
+        CGF.createBasicBlock("dtor.call_class_delete_after_array_destroy");
+    CGF.Builder.CreateCondBr(ShouldCallGlobDelete, ClassDelete,
+                             GlobDelete);
+    CGF.EmitBlock(ClassDelete);
+    if (Dtor->getArrayOperatorDelete()) {
+      CGF.EmitDeleteCall(Dtor->getArrayOperatorDelete(), allocatedPtr,
+                         CGF.getContext().getTagDeclType(ClassDecl));
+      CGF.EmitBranchThroughCleanup(CGF.ReturnBlock);
+    } else {
+      CGF.Builder.CreateUnreachable();
+    }
+
+    CGF.EmitBlock(GlobDelete);
+    CGF.EmitDeleteCall(Dtor->getGlobalArrayOperatorDelete(), allocatedPtr,
+                       CGF.getContext().getTagDeclType(ClassDecl));
+  }
 
   CGF.EmitBranchThroughCleanup(CGF.ReturnBlock);
   CGF.EmitBlock(ScalarBB);

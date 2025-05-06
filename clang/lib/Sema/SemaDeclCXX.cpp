@@ -11147,7 +11147,7 @@ bool Sema::CheckDestructor(CXXDestructorDecl *Destructor) {
             Loc, RD, VDeleteName, ArrOperatorDelete, GlobalArrOperatorDelete);
         Destructor->setOperatorArrayDelete(ArrOperatorDelete);
         Destructor->setGlobalOperatorArrayDelete(GlobalArrOperatorDelete);
-        assert(GlobalArrOperatorDelete || ArrOperatorDelete &&
+        assert((GlobalArrOperatorDelete || ArrOperatorDelete) &&
                "Not even global array delete?");
       }
     }
