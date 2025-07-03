@@ -677,6 +677,12 @@ private:
   computeVTPointerAuthentication(const CXXRecordDecl *ThisClass);
 
   AtomicOptions AtomicOpts;
+  llvm::DenseMap<CanQualType, llvm::GlobalVariable *> SYCLKernelNameSymbols;
+
+  // A set of functions which should be hot-patched; see
+  // -fms-hotpatch-functions-file (and -list). This will nearly always be empty.
+  // The list is sorted for binary-searching.
+  std::vector<std::string> MSHotPatchFunctions;
 
 public:
   CodeGenModule(ASTContext &C, IntrusiveRefCntPtr<llvm::vfs::FileSystem> FS,
@@ -1505,6 +1511,10 @@ public:
   /// annotations are emitted during finalization of the LLVM code.
   void AddGlobalAnnotations(const ValueDecl *D, llvm::GlobalValue *GV);
 
+  void AddSYCLKernelNameSymbol(CanQualType, llvm::GlobalVariable *);
+
+  llvm::GlobalVariable *GetSYCLKernelNameSymbol(CanQualType);
+
   bool isInNoSanitizeList(SanitizerMask Kind, llvm::Function *Fn,
                           SourceLocation Loc) const;
 
@@ -1810,6 +1820,15 @@ public:
     return !getLangOpts().CPlusPlus;
   }
 
+  // Helper to get the alignment for a variable.
+  unsigned getVtableGlobalVarAlignment(const VarDecl *D = nullptr) {
+    LangAS AS = GetGlobalVarAddressSpace(D);
+    unsigned PAlign = getItaniumVTableContext().isRelativeLayout()
+                          ? 32
+                          : getTarget().getPointerAlign(AS);
+    return PAlign;
+  }
+
 private:
   bool shouldDropDLLAttribute(const Decl *D, const llvm::GlobalValue *GV) const;
 
@@ -1974,6 +1993,12 @@ private:
   /// corresponding SYCL kernel caller offload entry point function.
   void EmitSYCLKernelCaller(const FunctionDecl *KernelEntryPointFn,
                             ASTContext &Ctx);
+
+  /// Initialize the global variables corresponding to SYCL Builtins used to
+  /// obtain information about the offload kernel.
+  void
+  InitSYCLKernelInfoSymbolsForBuiltins(const FunctionDecl *KernelEntryPointFn,
+                                       ASTContext &Ctx);
 
   /// Determine whether the definition must be emitted; if this returns \c
   /// false, the definition can be emitted lazily if it's used.
