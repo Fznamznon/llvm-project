@@ -34,6 +34,8 @@ template<int> struct K {
   void operator()(Ts...) const {}
 };
 
+template <typename KernelName, typename... Ts>
+void sycl_enqueue_kernel_launch(const char *, Ts...) {}
 
 [[clang::sycl_kernel_entry_point(KN<1>)]]
 void skep1() {
@@ -42,12 +44,11 @@ void skep1() {
 // CHECK-NEXT: | |-SYCLKernelCallStmt {{.*}}
 // CHECK-NEXT: | | |-CompoundStmt {{.*}}
 // CHECK-NEXT: | | |-CompoundStmt {{.*}}
-// CHECK-NEXT: | | | |-DeclStmt {{.*}}
-// CHECK-NEXT: | | | | `-VarDecl {{.*}} kernel_name 'const char *' extern
-// CHECK-NEXT: | | | `-BinaryOperator {{.*}} 'const char *' lvalue '='
-// CHECK-NEXT: | | |   |-DeclRefExpr {{.*}} 'const char *' lvalue Var {{.*}} 'kernel_name' 'const char *'
+// CHECK-NEXT: | | | `-CallExpr {{.*}}
+// CHECK-NEXT: | | |   |-ImplicitCastExpr {{.*}} 'void (*)(const char *)' <FunctionToPointerDecay>
+// CHECK-NEXT: | | |   | `-DeclRefExpr {{.*}} 'void (const char *)' lvalue Function {{.*}} 'sycl_enqueue_kernel_launch'
 // CHECK-NEXT: | | |   `-ImplicitCastExpr {{.*}} 'const char *' <ArrayToPointerDecay>
-// CHECK-NEXT: | | |     `-StringLiteral {{.*}} 'const char[14]' lvalue "_ZTS2KNILi1EE"
+// CHECK-NEXT: | | |       `-StringLiteral {{.*}} 'const char[14]' lvalue "_ZTS2KNILi1EE"
 // CHECK-NEXT: | | `-OutlinedFunctionDecl {{.*}}
 // CHECK-NEXT: | |   `-CompoundStmt {{.*}}
 // CHECK-NEXT: | `-SYCLKernelEntryPointAttr {{.*}} KN<1>
@@ -85,12 +86,14 @@ void skep2<KN<2>>(K<2>);
 // CHECK-NEXT: |   | |   `-ImplicitCastExpr {{.*}} 'const K<2>' lvalue <NoOp>
 // CHECK-NEXT: |   | |     `-DeclRefExpr {{.*}} 'K<2>' lvalue ParmVar {{.*}} 'k' 'K<2>'
 // CHECK-NEXT: |   | |-CompoundStmt {{.*}}
-// CHECK-NEXT: |   | | |-DeclStmt {{.*}}
-// CHECK-NEXT: |   | | | `-VarDecl {{.*}} kernel_name 'const char *' extern
-// CHECK-NEXT: |   | | `-BinaryOperator {{.*}} 'const char *' lvalue '='
-// CHECK-NEXT: |   | |   |-DeclRefExpr {{.*}} 'const char *' lvalue Var {{.*}} 'kernel_name' 'const char *'
-// CHECK-NEXT: |   | |   `-ImplicitCastExpr {{.*}} 'const char *' <ArrayToPointerDecay>
-// CHECK-NEXT: |   | |     `-StringLiteral {{.*}} 'const char[14]' lvalue "_ZTS2KNILi2EE"
+// CHECK-NEXT: |   | | `-CallExpr {{.*}} 'void'
+// CHECK-NEXT: |   | |   |-ImplicitCastExpr {{.*}} <FunctionToPointerDecay>
+// CHECK-NEXT: |   | |   | `-DeclRefExpr {{.*}} 'void (const char *, K<2>)' lvalue Function {{.*}} 'sycl_enqueue_kernel_launch' 'void (const char *, K<2>)' (FunctionTemplate {{.*}}} 'sycl_enqueue_kernel_launch')
+// CHECK-NEXT: |   | |   |-ImplicitCastExpr {{.*}} 'const char *' <ArrayToPointerDecay>
+// CHECK-NEXT: |   | |   | `-StringLiteral {{.*}} 'const char[14]' lvalue "_ZTS2KNILi2EE"
+// CHECK-NEXT: |   | |   `-CXXConstructExpr {{.*}} 'K<2>' 'void (const K<2> &) noexcept'
+// CHECK-NEXT: |   | |     `-ImplicitCastExpr {{.*}} <NoOp>
+// CHECK-NEXT: |   | |       `-DeclRefExpr {{.*}} 'K<2>' lvalue ParmVar {{.*}} 'k' 'K<2>'
 // CHECK-NEXT: |   | `-OutlinedFunctionDecl {{.*}}
 // CHECK-NEXT: |   |   |-ImplicitParamDecl {{.*}} implicit used k 'K<2>'
 // CHECK-NEXT: |   |   `-CompoundStmt {{.*}}

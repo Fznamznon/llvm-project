@@ -376,43 +376,75 @@ void SemaSYCL::CheckSYCLEntryPointFunctionDecl(FunctionDecl *FD) {
 namespace {
 
 CompoundStmt *BuildSYCLKernelLaunchStmt(Sema &SemaRef, FunctionDecl *FD,
-                                        const std::string &KernelName) {
+                                        const std::string &KernelName,
+                                        QualType KNT) {
   ASTContext &Ctx = SemaRef.getASTContext();
   SmallVector<Stmt *> Stmts;
+  // Some routines need a valid source location to work correctly.
+  SourceLocation BodyLoc =
+      FD->getEndLoc().isValid() ? FD->getEndLoc() : FD->getLocation();
+  CompoundStmt *LaunchStmt;
 
-  // Prepare a string literal that contains the kernel name.
-  QualType KernelNameCharTy = Ctx.CharTy.withConst();
-  llvm::APInt KernelNameSize(Ctx.getTypeSize(Ctx.getSizeType()),
-                             KernelName.size() + 1);
-  QualType KernelNameArrayTy = Ctx.getConstantArrayType(
-      KernelNameCharTy, KernelNameSize, nullptr, ArraySizeModifier::Normal, 0);
-  StringLiteral *KernelNameExpr = StringLiteral::Create(
-      Ctx, KernelName, StringLiteralKind::Ordinary,
-      /*Pascal*/ false, KernelNameArrayTy, SourceLocation());
+  {
+    Sema::SynthesizedFunctionScope Scope(SemaRef, SemaRef.CurContext);
 
-  // FIXME: An extern variable declaration with assignment to the kernel
-  // name expression is added to Stmts as a temporary measure to see results.
-  // reflected in tests. The kernel name expression will need to be passed as
-  // the first function argument in a call to sycl_enqueue_kernel_launch.
-  QualType ExternVarType = Ctx.getPointerType(Ctx.CharTy.withConst());
-  const IdentifierInfo *ExternVarName =
-      SemaRef.getPreprocessor().getIdentifierInfo("kernel_name");
-  VarDecl *ExternVarDecl = VarDecl::Create(
-      Ctx, FD, SourceLocation(), SourceLocation(), ExternVarName, ExternVarType,
-      /*TInfo*/ nullptr, SC_Extern);
-  DeclStmt *ExternVarDeclStmt = new (Ctx)
-      DeclStmt(DeclGroupRef(ExternVarDecl), SourceLocation(), SourceLocation());
-  Stmts.push_back(ExternVarDeclStmt);
-  DeclRefExpr *ExternVarDeclRef = new (Ctx) DeclRefExpr(
-      Ctx, ExternVarDecl, /*RefersToEnclosingVariableOrCapture*/ false,
-      ExternVarType, VK_LValue, SourceLocation());
-  ImplicitCastExpr *KernelNameArrayDecayExpr = new (Ctx) ImplicitCastExpr(
-      ImplicitCastExpr::OnStack, ExternVarType, CK_ArrayToPointerDecay,
-      KernelNameExpr, VK_PRValue, FPOptionsOverride());
-  BinaryOperator *AssignmentExpr = BinaryOperator::Create(
-      Ctx, ExternVarDeclRef, KernelNameArrayDecayExpr, BO_Assign, ExternVarType,
-      VK_LValue, OK_Ordinary, SourceLocation(), FPOptionsOverride());
-  Stmts.push_back(AssignmentExpr);
+    // Prepare a string literal that contains the kernel name.
+    QualType KernelNameCharTy = Ctx.CharTy.withConst();
+    llvm::APInt KernelNameSize(Ctx.getTypeSize(Ctx.getSizeType()),
+                               KernelName.size() + 1);
+    QualType KernelNameArrayTy =
+        Ctx.getConstantArrayType(KernelNameCharTy, KernelNameSize, nullptr,
+                                 ArraySizeModifier::Normal, 0);
+    StringLiteral *KernelNameExpr = StringLiteral::Create(
+        Ctx, KernelName, StringLiteralKind::Ordinary,
+        /*Pascal*/ false, KernelNameArrayTy, SourceLocation());
+
+    QualType ExternVarType = Ctx.getPointerType(Ctx.CharTy.withConst());
+    ImplicitCastExpr *KernelNameArrayDecayExpr = new (Ctx) ImplicitCastExpr(
+        ImplicitCastExpr::OnStack, ExternVarType, CK_ArrayToPointerDecay,
+        KernelNameExpr, VK_PRValue, FPOptionsOverride());
+
+    IdentifierInfo &LaunchFooName = Ctx.Idents.get("sycl_enqueue_kernel_launch",
+                                                   tok::TokenKind::identifier);
+
+    LookupResult Result(SemaRef, &LaunchFooName, BodyLoc,
+                        Sema::LookupOrdinaryName);
+    CXXScopeSpec SS;
+    SemaRef.LookupTemplateName(Result, SemaRef.getCurScope(), SS,
+                               /*ObjectType=*/QualType(),
+                               /*EnteringContext=*/false, BodyLoc);
+
+    if (!Result.empty()) {
+      TemplateArgumentListInfo TALI{BodyLoc, BodyLoc};
+      TemplateArgument KNTA = TemplateArgument(KNT);
+      TemplateArgumentLoc TAL =
+          SemaRef.getTrivialTemplateArgumentLoc(KNTA, QualType(), BodyLoc);
+      TALI.addArgument(TAL);
+      ExprResult IdExpr;
+      if (Result.begin()->isCXXClassMember()) {
+        // That creates UnresolvedMemberExpr
+        IdExpr = SemaRef.BuildPossibleImplicitMemberExpr(
+            SS, BodyLoc, Result, &TALI, SemaRef.getCurScope());
+      } else {
+        IdExpr = SemaRef.BuildTemplateIdExpr(SS, BodyLoc, Result,
+                                             /*RequiresADL=*/true, &TALI);
+      }
+
+      llvm::SmallVector<Expr *, 12> Args;
+      Args.push_back(KernelNameArrayDecayExpr);
+      for (ParmVarDecl *PVD : FD->parameters()) {
+        QualType ParamType = PVD->getOriginalType().getNonReferenceType();
+        Expr *DRE =
+            SemaRef.BuildDeclRefExpr(PVD, ParamType, VK_LValue, BodyLoc);
+        Args.push_back(DRE);
+      }
+      ExprResult CE = SemaRef.BuildCallExpr(SemaRef.getCurScope(), IdExpr.get(),
+                                            BodyLoc, Args, BodyLoc);
+      Stmts.push_back(CE.get());
+    }
+    LaunchStmt =
+        CompoundStmt::Create(Ctx, Stmts, FPOptionsOverride(), BodyLoc, BodyLoc);
+  }
 
   // Perform overload resolution for a call to an accessible (member) function
   // template named 'sycl_enqueue_kernel_launch' from within the definition of
@@ -427,8 +459,6 @@ CompoundStmt *BuildSYCLKernelLaunchStmt(Sema &SemaRef, FunctionDecl *FD,
   // - The parameters of FD are forwarded as-if by 'std::forward()' as the
   //   remaining explicit function arguments.
   // - Any remaining function arguments are initialized by default arguments.
-  CompoundStmt *LaunchStmt = CompoundStmt::Create(
-      Ctx, Stmts, FPOptionsOverride(), SourceLocation(), SourceLocation());
 
   return LaunchStmt;
 }
@@ -541,8 +571,8 @@ StmtResult SemaSYCL::BuildSYCLKernelCallStmt(FunctionDecl *FD,
          "SYCL kernel name conflict");
 
   // Build the kernel launch statement.
-  Stmt *LaunchStmt =
-      BuildSYCLKernelLaunchStmt(SemaRef, FD, SKI.GetKernelName());
+  Stmt *LaunchStmt = BuildSYCLKernelLaunchStmt(SemaRef, FD, SKI.GetKernelName(),
+                                               SKI.getKernelNameType());
   assert(LaunchStmt);
 
   // Build the outline of the synthesized device entry point function.
