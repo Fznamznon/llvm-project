@@ -414,6 +414,18 @@ CompoundStmt *BuildSYCLKernelLaunchStmt(Sema &SemaRef, FunctionDecl *FD,
                                /*ObjectType=*/QualType(),
                                /*EnteringContext=*/false, BodyLoc);
 
+    // If we could create a correct scope object that corresponds to the FD,
+    // we wouldn't have to do this. However it seems the only correct way to
+    // create it is actually enter the scope when parsing it.
+    if (Result.empty()) {
+      if (auto *MD = dyn_cast<CXXMethodDecl>(FD)) {
+        SemaRef.LookupTemplateName(
+            Result, SemaRef.getCurScope(), SS,
+            QualType(MD->getParent()->getTypeForDecl(), 0),
+            /*EnteringContext=*/false, BodyLoc);
+      }
+    }
+
     if (!Result.empty()) {
       TemplateArgumentListInfo TALI{BodyLoc, BodyLoc};
       TemplateArgument KNTA = TemplateArgument(KNT);
@@ -444,6 +456,7 @@ CompoundStmt *BuildSYCLKernelLaunchStmt(Sema &SemaRef, FunctionDecl *FD,
     }
     LaunchStmt =
         CompoundStmt::Create(Ctx, Stmts, FPOptionsOverride(), BodyLoc, BodyLoc);
+    LaunchStmt->dump();
   }
 
   // Perform overload resolution for a call to an accessible (member) function
