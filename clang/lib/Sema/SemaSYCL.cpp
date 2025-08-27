@@ -400,88 +400,18 @@ CompoundStmt *BuildSYCLKernelLaunchStmt(Sema &SemaRef, FunctionDecl *FD,
   // Some routines need a valid source location to work correctly.
   SourceLocation BodyLoc =
       FD->getEndLoc().isValid() ? FD->getEndLoc() : FD->getLocation();
-  CompoundStmt *LaunchStmt;
 
-  {
-    Sema::SynthesizedFunctionScope Scope(SemaRef, SemaRef.CurContext);
+  Sema::SynthesizedFunctionScope Scope(SemaRef, SemaRef.CurContext);
 
-    // Prepare a string literal that contains the kernel name.
-    QualType KernelNameCharTy = Ctx.CharTy.withConst();
-    llvm::APInt KernelNameSize(Ctx.getTypeSize(Ctx.getSizeType()),
-                               KernelName.size() + 1);
-    QualType KernelNameArrayTy =
-        Ctx.getConstantArrayType(KernelNameCharTy, KernelNameSize, nullptr,
-                                 ArraySizeModifier::Normal, 0);
-    StringLiteral *KernelNameExpr = StringLiteral::Create(
-        Ctx, KernelName, StringLiteralKind::Ordinary,
-        /*Pascal*/ false, KernelNameArrayTy, SourceLocation());
-
-    QualType ExternVarType = Ctx.getPointerType(Ctx.CharTy.withConst());
-    ImplicitCastExpr *KernelNameArrayDecayExpr = new (Ctx) ImplicitCastExpr(
-        ImplicitCastExpr::OnStack, ExternVarType, CK_ArrayToPointerDecay,
-        KernelNameExpr, VK_PRValue, FPOptionsOverride());
-
-    IdentifierInfo &LaunchFooName = Ctx.Idents.get("sycl_enqueue_kernel_launch",
-                                                   tok::TokenKind::identifier);
-
-    LookupResult Result(SemaRef, &LaunchFooName, BodyLoc,
-                        Sema::LookupOrdinaryName);
-    CXXScopeSpec SS;
-    SemaRef.LookupTemplateName(Result, SemaRef.getCurScope(), SS,
-                               /*ObjectType=*/QualType(),
-                               /*EnteringContext=*/false, BodyLoc);
-
-    // If we could create a correct scope object that corresponds to the FD,
-    // we wouldn't have to do this. However it seems the only correct way to
-    // create it is actually enter the scope when parsing it.
-    if (Result.empty()) {
-      if (auto *MD = dyn_cast<CXXMethodDecl>(FD)) {
-        SemaRef.LookupTemplateName(
-            Result, SemaRef.getCurScope(), SS,
-            QualType(MD->getParent()->getTypeForDecl(), 0),
-            /*EnteringContext=*/false, BodyLoc);
-      }
-    }
-
-    if (!Result.empty()) {
-      TemplateArgumentListInfo TALI{BodyLoc, BodyLoc};
-      TemplateArgument KNTA = TemplateArgument(KNT);
-      TemplateArgumentLoc TAL =
-          SemaRef.getTrivialTemplateArgumentLoc(KNTA, QualType(), BodyLoc);
-      TALI.addArgument(TAL);
-      ExprResult IdExpr;
-      if (Result.begin()->isCXXClassMember()) {
-        // That creates UnresolvedMemberExpr
-        IdExpr = SemaRef.BuildPossibleImplicitMemberExpr(
-            SS, BodyLoc, Result, &TALI, SemaRef.getCurScope());
-      } else {
-        IdExpr = SemaRef.BuildTemplateIdExpr(SS, BodyLoc, Result,
-                                             /*RequiresADL=*/true, &TALI);
-      }
-
-      llvm::SmallVector<Expr *, 12> Args;
-      Args.push_back(KernelNameArrayDecayExpr);
-      for (ParmVarDecl *PVD : FD->parameters()) {
-        QualType ParamType = PVD->getOriginalType().getNonReferenceType();
-        Expr *DRE =
-            SemaRef.BuildDeclRefExpr(PVD, ParamType, VK_LValue, BodyLoc);
-        Args.push_back(DRE);
-      }
-      ExprResult CE = SemaRef.BuildCallExpr(SemaRef.getCurScope(), IdExpr.get(),
-                                            BodyLoc, Args, BodyLoc);
-      Stmts.push_back(CE.get());
-    }
-    LaunchStmt =
-        CompoundStmt::Create(Ctx, Stmts, FPOptionsOverride(), BodyLoc, BodyLoc);
-    LaunchStmt->dump();
-  }
+  IdentifierInfo &LaunchFooName =
+      Ctx.Idents.get("sycl_enqueue_kernel_launch", tok::TokenKind::identifier);
 
   // Perform overload resolution for a call to an accessible (member) function
-  // template named 'sycl_enqueue_kernel_launch' from within the definition of
-  // FD where:
+  // template named 'sycl_enqueue_kernel_launch' "from within the definition of
+  // FD where":
   // - The kernel name type is passed as the first template argument.
-  // - Any remaining template parameters are deduced from the function arguments
-  //   or assigned by default template arguments.
+  // - Any remaining template parameters are deduced from the function
+  //   arguments or assigned by default template arguments.
   // - 'this' is passed as the implicit function argument if 'FD' is a
   //   non-static member function.
   // - The name of the kernel, expressed as a string literal, is passed as the
@@ -489,8 +419,77 @@ CompoundStmt *BuildSYCLKernelLaunchStmt(Sema &SemaRef, FunctionDecl *FD,
   // - The parameters of FD are forwarded as-if by 'std::forward()' as the
   //   remaining explicit function arguments.
   // - Any remaining function arguments are initialized by default arguments.
+  LookupResult Result(SemaRef, &LaunchFooName, BodyLoc,
+                      Sema::LookupOrdinaryName);
+  CXXScopeSpec SS;
+  SemaRef.LookupTemplateName(Result, SemaRef.getCurScope(), SS,
+                             /*ObjectType=*/QualType(),
+                             /*EnteringContext=*/false, BodyLoc);
 
-  return LaunchStmt;
+  // If an unqualified lookup didn't find anything for us, enable lookup of a
+  // member by passing the parent class type. If we could create a correct scope
+  // object that corresponds to the FD, we wouldn't have to do this. However it
+  // seems the only correct way to create it is actually enter the scope when
+  // parsing it.
+  if (Result.empty()) {
+    if (auto *MD = dyn_cast<CXXMethodDecl>(FD); MD && !MD->isStatic())
+      SemaRef.LookupTemplateName(Result, SemaRef.getCurScope(), SS,
+                                 Ctx.getCanonicalTagType(MD->getParent()),
+                                 /*EnteringContext=*/false, BodyLoc);
+  }
+
+  if (Result.empty() || Result.isAmbiguous()) {
+    SemaRef.Diag(BodyLoc, SemaRef.getLangOpts().SYCLIsHost
+                              ? diag::err_sycl_host_no_launch_function
+                              : diag::warn_sycl_device_no_host_launch_function);
+    SemaRef.Diag(BodyLoc, diag::note_sycl_host_launch_function);
+
+    return CompoundStmt::Create(Ctx, Stmts, FPOptionsOverride(), BodyLoc,
+                                BodyLoc);
+  }
+  // Prepare a string literal that contains the kernel name.
+  QualType KernelNameCharTy = Ctx.CharTy.withConst();
+  llvm::APInt KernelNameSize(Ctx.getTypeSize(Ctx.getSizeType()),
+                             KernelName.size() + 1);
+  QualType KernelNameArrayTy = Ctx.getConstantArrayType(
+      KernelNameCharTy, KernelNameSize, nullptr, ArraySizeModifier::Normal, 0);
+  StringLiteral *KernelNameExpr =
+      StringLiteral::Create(Ctx, KernelName, StringLiteralKind::Ordinary,
+                            /*Pascal*/ false, KernelNameArrayTy, BodyLoc);
+
+  QualType ExternVarType = Ctx.getPointerType(Ctx.CharTy.withConst());
+  ImplicitCastExpr *KernelNameArrayDecayExpr = new (Ctx) ImplicitCastExpr(
+      ImplicitCastExpr::OnStack, ExternVarType, CK_ArrayToPointerDecay,
+      KernelNameExpr, VK_PRValue, FPOptionsOverride());
+  TemplateArgumentListInfo TALI{BodyLoc, BodyLoc};
+  TemplateArgument KNTA = TemplateArgument(KNT);
+  TemplateArgumentLoc TAL =
+      SemaRef.getTrivialTemplateArgumentLoc(KNTA, QualType(), BodyLoc);
+  TALI.addArgument(TAL);
+  ExprResult IdExpr;
+  if (Result.begin()->isCXXClassMember()) {
+    // BuildPossibleImplicitMemberExpr UnresolvedMemberExpr. Using it allows
+    // to pass implicit/explicit this argument automatically.
+    IdExpr = SemaRef.BuildPossibleImplicitMemberExpr(SS, BodyLoc, Result, &TALI,
+                                                     SemaRef.getCurScope());
+  } else {
+    IdExpr = SemaRef.BuildTemplateIdExpr(SS, BodyLoc, Result,
+                                         /*RequiresADL=*/true, &TALI);
+  }
+
+  llvm::SmallVector<Expr *, 12> Args;
+  Args.push_back(KernelNameArrayDecayExpr);
+  for (ParmVarDecl *PVD : FD->parameters()) {
+    QualType ParamType = PVD->getOriginalType().getNonReferenceType();
+    Expr *DRE = SemaRef.BuildDeclRefExpr(PVD, ParamType, VK_LValue, BodyLoc);
+    Args.push_back(DRE);
+  }
+  ExprResult CE = SemaRef.BuildCallExpr(SemaRef.getCurScope(), IdExpr.get(),
+                                        BodyLoc, Args, BodyLoc);
+  Stmts.push_back(CE.get());
+
+  return CompoundStmt::Create(Ctx, Stmts, FPOptionsOverride(), BodyLoc,
+                              BodyLoc);
 }
 
 // The body of a function declared with the [[sycl_kernel_entry_point]]
@@ -601,8 +600,8 @@ StmtResult SemaSYCL::BuildSYCLKernelCallStmt(FunctionDecl *FD,
          "SYCL kernel name conflict");
 
   // Build the kernel launch statement.
-  Stmt *LaunchStmt = BuildSYCLKernelLaunchStmt(SemaRef, FD, SKI.GetKernelName(),
-                                               SKI.getKernelNameType());
+  CompoundStmt *LaunchStmt = BuildSYCLKernelLaunchStmt(
+      SemaRef, FD, SKI.GetKernelName(), SKI.getKernelNameType());
   assert(LaunchStmt);
 
   // Build the outline of the synthesized device entry point function.

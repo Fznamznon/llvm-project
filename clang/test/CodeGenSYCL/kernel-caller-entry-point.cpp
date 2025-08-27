@@ -28,6 +28,9 @@
 // and emited during device compilation. They are not emitted during device
 // compilation.
 
+template <typename KernelName, typename KernelObj>
+void sycl_enqueue_kernel_launch(const char *, KernelObj) {}
+
 struct single_purpose_kernel_name;
 struct single_purpose_kernel {
   void operator()() const {}
@@ -79,50 +82,67 @@ int main() {
 // CHECK-HOST-LINUX:      define dso_local void @_Z26single_purpose_kernel_task21single_purpose_kernel() #{{[0-9]+}} {
 // CHECK-HOST-LINUX-NEXT: entry:
 // CHECK-HOST-LINUX-NEXT:   %kernelFunc = alloca %struct.single_purpose_kernel, align 1
-// CHECK-HOST-LINUX-NEXT:   store ptr @.str, ptr @kernel_name, align 8
+// CHECK-HOST-LINUX-NEXT:   %agg.tmp = alloca %struct.single_purpose_kernel, align 1
+// CHECK-HOST-LINUX-NEXT:   call void @_Z26sycl_enqueue_kernel_launchI26single_purpose_kernel_name21single_purpose_kernelEvPKcT0_(ptr noundef @.str)
 // CHECK-HOST-LINUX-NEXT:   ret void
 // CHECK-HOST-LINUX-NEXT: }
 //
 // CHECK-HOST-LINUX:      define internal void @_Z18kernel_single_taskIZ4mainEUlT_E_S1_EvT0_(i32 %kernelFunc.coerce) #{{[0-9]+}} {
 // CHECK-HOST-LINUX-NEXT: entry:
 // CHECK-HOST-LINUX-NEXT:   %kernelFunc = alloca %class.anon, align 4
+// CHECK-HOST-LINUX-NEXT:   %agg.tmp = alloca %class.anon, align 4
 // CHECK-HOST-LINUX-NEXT:   %coerce.dive = getelementptr inbounds nuw %class.anon, ptr %kernelFunc, i32 0, i32 0
 // CHECK-HOST-LINUX-NEXT:   store i32 %kernelFunc.coerce, ptr %coerce.dive, align 4
-// CHECK-HOST-LINUX-NEXT:   store ptr @.str.1, ptr @kernel_name, align 8
+// CHECK-HOST-LINUX-NEXT:   call void @llvm.memcpy.p0.p0.i64(ptr align 4 %agg.tmp, ptr align 4 %kernelFunc, i64 4, i1 false)
+// CHECK-HOST-LINUX-NEXT:   %coerce.dive1 = getelementptr inbounds nuw %class.anon, ptr %agg.tmp, i32 0, i32 0
+// CHECK-HOST-LINUX-NEXT:   %0 = load i32, ptr %coerce.dive1, align 4
+// CHECK-HOST-LINUX-NEXT:   call void @_Z26sycl_enqueue_kernel_launchIZ4mainEUlT_E_S1_EvPKcT0_(ptr noundef @.str.1, i32 %0)
 // CHECK-HOST-LINUX-NEXT:   ret void
 // CHECK-HOST-LINUX-NEXT: }
 //
 // CHECK-HOST-LINUX:      define internal void @"_Z18kernel_single_taskI6\CE\B4\CF\84\CF\87Z4mainEUliE_EvT0_"() #{{[0-9]+}} {
 // CHECK-HOST-LINUX-NEXT: entry:
 // CHECK-HOST-LINUX-NEXT:   %kernelFunc = alloca %class.anon.0, align 1
-// CHECK-HOST-LINUX-NEXT:   store ptr @.str.2, ptr @kernel_name, align 8
+// CHECK-HOST-LINUX-NEXT:   %agg.tmp = alloca %class.anon.0, align 1
+// CHECK-HOST-LINUX-NEXT:   call void @"_Z26sycl_enqueue_kernel_launchI6\CE\B4\CF\84\CF\87Z4mainEUliE_EvPKcT0_"(ptr noundef @.str.2)
 // CHECK-HOST-LINUX-NEXT:   ret void
 // CHECK-HOST-LINUX-NEXT: }
 //
 // CHECK-HOST-WINDOWS:      define dso_local void @"?single_purpose_kernel_task@@YAXUsingle_purpose_kernel@@@Z"(i8 %kernelFunc.coerce) #{{[0-9]+}} {
 // CHECK-HOST-WINDOWS-NEXT: entry:
 // CHECK-HOST-WINDOWS-NEXT:   %kernelFunc = alloca %struct.single_purpose_kernel, align 1
+// CHECK-HOST-WINDOWS-NEXT:   %agg.tmp = alloca %struct.single_purpose_kernel, align 1
 // CHECK-HOST-WINDOWS-NEXT:   %coerce.dive = getelementptr inbounds nuw %struct.single_purpose_kernel, ptr %kernelFunc, i32 0, i32 0
 // CHECK-HOST-WINDOWS-NEXT:   store i8 %kernelFunc.coerce, ptr %coerce.dive, align 1
-// CHECK-HOST-WINDOWS-NEXT:   store ptr @"??_C@_0CB@KFIJOMLB@_ZTS26single_purpose_kernel_name@", ptr @"?kernel_name@?0??single_purpose_kernel_task@@YAXUsingle_purpose_kernel@@@Z@3PEBDEB", align 8
+// CHECK-HOST-WINDOWS-NEXT:   %coerce.dive1 = getelementptr inbounds nuw %struct.single_purpose_kernel, ptr %agg.tmp, i32 0, i32 0
+// CHECK-HOST-WINDOWS-NEXT:   %0 = load i8, ptr %coerce.dive1, align 1
+// CHECK-HOST-WINDOWS-NEXT:   call void @"??$sycl_enqueue_kernel_launch@Usingle_purpose_kernel_name@@Usingle_purpose_kernel@@@@YAXPEBDUsingle_purpose_kernel@@@Z"(ptr noundef @"??_C@_0CB@KFIJOMLB@_ZTS26single_purpose_kernel_name@", i8 %0)
 // CHECK-HOST-WINDOWS-NEXT:   ret void
 // CHECK-HOST-WINDOWS-NEXT: }
 //
 // CHECK-HOST-WINDOWS:      define internal void @"??$kernel_single_task@V<lambda_1>@?0??main@@9@V1?0??2@9@@@YAXV<lambda_1>@?0??main@@9@@Z"(i32 %kernelFunc.coerce) #{{[0-9]+}} {
 // CHECK-HOST-WINDOWS-NEXT: entry:
 // CHECK-HOST-WINDOWS-NEXT:   %kernelFunc = alloca %class.anon, align 4
+// CHECK-HOST-WINDOWS-NEXT:   %agg.tmp = alloca %class.anon, align 4
 // CHECK-HOST-WINDOWS-NEXT:   %coerce.dive = getelementptr inbounds nuw %class.anon, ptr %kernelFunc, i32 0, i32 0
 // CHECK-HOST-WINDOWS-NEXT:   store i32 %kernelFunc.coerce, ptr %coerce.dive, align 4
-// CHECK-HOST-WINDOWS-NEXT:   store ptr @"??_C@_0BC@NHCDOLAA@_ZTSZ4mainEUlT_E_?$AA@", ptr @"?kernel_name@?0???$kernel_single_task@V<lambda_1>@?0??main@@9@V1?0??2@9@@@YAXV<lambda_1>@?0??main@@9@@Z@3PEBDEB", align 8
+// CHECK-HOST-WINDOWS-NEXT:   call void @llvm.memcpy.p0.p0.i64(ptr align 4 %agg.tmp, ptr align 4 %kernelFunc, i64 4, i1 false)
+// CHECK-HOST-WINDOWS-NEXT:   %coerce.dive1 = getelementptr inbounds nuw %class.anon, ptr %agg.tmp, i32 0, i32 0
+// CHECK-HOST-WINDOWS-NEXT:   %0 = load i32, ptr %coerce.dive1, align 4
+// CHECK-HOST-WINDOWS-NEXT:   call void @"??$sycl_enqueue_kernel_launch@V<lambda_1>@?0??main@@9@V1?0??2@9@@@YAXPEBDV<lambda_1>@?0??main@@9@@Z"(ptr noundef @"??_C@_0BC@NHCDOLAA@_ZTSZ4mainEUlT_E_?$AA@", i32 %0)
+//
 // CHECK-HOST-WINDOWS-NEXT:   ret void
 // CHECK-HOST-WINDOWS-NEXT: }
 //
 // CHECK-HOST-WINDOWS:      define internal void @"??$kernel_single_task@U\CE\B4\CF\84\CF\87@@V<lambda_2>@?0??main@@9@@@YAXV<lambda_2>@?0??main@@9@@Z"(i8 %kernelFunc.coerce) #{{[0-9]+}} {
 // CHECK-HOST-WINDOWS-NEXT: entry:
 // CHECK-HOST-WINDOWS-NEXT:   %kernelFunc = alloca %class.anon.0, align 1
+// CHECK-HOST-WINDOWS-NEXT:   %agg.tmp = alloca %class.anon.0, align 1
 // CHECK-HOST-WINDOWS-NEXT:   %coerce.dive = getelementptr inbounds nuw %class.anon.0, ptr %kernelFunc, i32 0, i32 0
 // CHECK-HOST-WINDOWS-NEXT:   store i8 %kernelFunc.coerce, ptr %coerce.dive, align 1
-// CHECK-HOST-WINDOWS-NEXT:   store ptr @"??_C@_0M@BCGAEMBE@_ZTS6?N?$LE?O?$IE?O?$IH?$AA@", ptr @"?kernel_name@?0???$kernel_single_task@U\CE\B4\CF\84\CF\87@@V<lambda_2>@?0??main@@9@@@YAXV<lambda_2>@?0??main@@9@@Z@3PEBDEB", align 8
+// CHECK-HOST-WINDOWS-NEXT:   %coerce.dive1 = getelementptr inbounds nuw %class.anon.0, ptr %agg.tmp, i32 0, i32 0
+// CHECK-HOST-WINDOWS-NEXT:   %0 = load i8, ptr %coerce.dive1, align 1
+// CHECK-HOST-WINDOWS-NEXT:   call void @"??$sycl_enqueue_kernel_launch@U\CE\B4\CF\84\CF\87@@V<lambda_2>@?0??main@@9@@@YAXPEBDV<lambda_2>@?0??main@@9@@Z"(ptr noundef @"??_C@_0M@BCGAEMBE@_ZTS6?N?$LE?O?$IE?O?$IH?$AA@", i8 %0)
 // CHECK-HOST-WINDOWS-NEXT:   ret void
 // CHECK-HOST-WINDOWS-NEXT: }
 
