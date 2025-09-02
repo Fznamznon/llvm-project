@@ -15754,7 +15754,6 @@ Sema::ActOnStartOfFunctionDef(Scope *FnBodyScope, Declarator &D,
   if (!Bases.empty())
     OpenMP().ActOnFinishedFunctionDefinitionInOpenMPDeclareVariantScope(Dcl,
                                                                         Bases);
-
   return Dcl;
 }
 
@@ -16167,6 +16166,14 @@ Decl *Sema::ActOnStartOfFunctionDef(Scope *FnBodyScope, Decl *D,
 
   maybeAddDeclWithEffects(FD);
 
+  if (FD && !FD->isInvalidDecl() &&
+      FD->hasAttr<SYCLKernelEntryPointAttr>() && FnBodyScope) {
+    const auto *SKEPAttr = FD->getAttr<SYCLKernelEntryPointAttr>();
+    CompoundStmt *LaunchStmt =
+        SYCL().BuildSYCLKernelLaunchStmt(FD, SKEPAttr->getKernelName());
+    getCurFunction()->SYCLKernelLaunchStmt = LaunchStmt;
+  }
+
   return D;
 }
 
@@ -16368,9 +16375,11 @@ Decl *Sema::ActOnFinishFunctionBody(Decl *dcl, Stmt *Body, bool IsInstantiation,
       SKEPAttr->setInvalidAttr();
     }
 
-    if (Body && !FD->isTemplated() && !SKEPAttr->isInvalidAttr()) {
-      StmtResult SR =
-          SYCL().BuildSYCLKernelCallStmt(FD, cast<CompoundStmt>(Body));
+    auto *BodyCompound = dyn_cast_or_null<CompoundStmt>(Body);
+    if (BodyCompound && !SKEPAttr->isInvalidAttr()) {
+      StmtResult SR = SYCL().BuildSYCLKernelCallStmt(
+          FD->isTemplated() ? nullptr : FD, BodyCompound,
+          getCurFunction()->SYCLKernelLaunchStmt);
       if (SR.isInvalid())
         return nullptr;
       Body = SR.get();

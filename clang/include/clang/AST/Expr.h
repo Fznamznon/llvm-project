@@ -2178,6 +2178,36 @@ public:
   static std::string ComputeName(ASTContext &Context, QualType Ty);
 };
 
+class UnresolvedSYCLKernelNameExpr : public Expr {
+  friend class ASTStmtReader;
+  QualType KernelNameType;
+  SourceLocation Loc;
+  UnresolvedSYCLKernelNameExpr(SourceLocation L, QualType ExprTy, QualType KNT);
+
+  void setKernelNameType(QualType T) { KernelNameType = T; }
+
+public:
+  QualType getKernelNameType() { return KernelNameType; }
+  static UnresolvedSYCLKernelNameExpr *Create(const ASTContext &C, QualType T,
+                                              SourceLocation Loc);
+  static UnresolvedSYCLKernelNameExpr *CreateEmpty(const ASTContext &C);
+
+  SourceLocation getBeginLoc() const { return Loc; }
+  SourceLocation getEndLoc() const { return Loc; }
+  SourceLocation getLocation() const { return Loc; }
+  static bool classof(const Stmt *T) {
+    return T->getStmtClass() == UnresolvedSYCLKernelNameExprClass;
+  }
+  // Iterators
+  child_range children() {
+    return child_range(child_iterator(), child_iterator());
+  }
+
+  const_child_range children() const {
+    return const_child_range(const_child_iterator(), const_child_iterator());
+  }
+};
+
 /// ParenExpr - This represents a parenthesized expression, e.g. "(1)".  This
 /// AST node is only formed if full location information is requested.
 class ParenExpr : public Expr {

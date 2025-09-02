@@ -390,11 +390,9 @@ void SemaSYCL::CheckSYCLEntryPointFunctionDecl(FunctionDecl *FD) {
   }
 }
 
-namespace {
+CompoundStmt *SemaSYCL::BuildSYCLKernelLaunchStmt(FunctionDecl *FD,
+                                                  QualType KNT) {
 
-CompoundStmt *BuildSYCLKernelLaunchStmt(Sema &SemaRef, FunctionDecl *FD,
-                                        const std::string &KernelName,
-                                        QualType KNT) {
   ASTContext &Ctx = SemaRef.getASTContext();
   SmallVector<Stmt *> Stmts;
   // Some routines need a valid source location to work correctly.
@@ -431,12 +429,12 @@ CompoundStmt *BuildSYCLKernelLaunchStmt(Sema &SemaRef, FunctionDecl *FD,
   // object that corresponds to the FD, we wouldn't have to do this. However it
   // seems the only correct way to create it is actually enter the scope when
   // parsing it.
-  if (Result.empty()) {
-    if (auto *MD = dyn_cast<CXXMethodDecl>(FD); MD && !MD->isStatic())
-      SemaRef.LookupTemplateName(Result, SemaRef.getCurScope(), SS,
-                                 Ctx.getCanonicalTagType(MD->getParent()),
-                                 /*EnteringContext=*/false, BodyLoc);
-  }
+  // if (Result.empty()) {
+  //   if (auto *MD = dyn_cast<CXXMethodDecl>(FD); MD && !MD->isStatic())
+  //     SemaRef.LookupTemplateName(Result, SemaRef.getCurScope(), SS,
+  //                                Ctx.getCanonicalTagType(MD->getParent()),
+  //                                /*EnteringContext=*/false, BodyLoc);
+  // }
 
   if (Result.empty() || Result.isAmbiguous()) {
     SemaRef.Diag(BodyLoc, SemaRef.getLangOpts().SYCLIsHost
@@ -447,15 +445,24 @@ CompoundStmt *BuildSYCLKernelLaunchStmt(Sema &SemaRef, FunctionDecl *FD,
     return CompoundStmt::Create(Ctx, Stmts, FPOptionsOverride(), BodyLoc,
                                 BodyLoc);
   }
-  // Prepare a string literal that contains the kernel name.
-  QualType KernelNameCharTy = Ctx.CharTy.withConst();
-  llvm::APInt KernelNameSize(Ctx.getTypeSize(Ctx.getSizeType()),
-                             KernelName.size() + 1);
-  QualType KernelNameArrayTy = Ctx.getConstantArrayType(
-      KernelNameCharTy, KernelNameSize, nullptr, ArraySizeModifier::Normal, 0);
-  StringLiteral *KernelNameExpr =
-      StringLiteral::Create(Ctx, KernelName, StringLiteralKind::Ordinary,
-                            /*Pascal*/ false, KernelNameArrayTy, BodyLoc);
+  const SYCLKernelInfo *SKI = Ctx.findSYCLKernelInfo(KNT);
+  Expr *KernelNameExpr = nullptr;
+  if (SKI) {
+    const std::string KernelName = SKI->GetKernelName();
+    // Prepare a string literal that contains the kernel name.
+    QualType KernelNameCharTy = Ctx.CharTy.withConst();
+    llvm::APInt KernelNameSize(Ctx.getTypeSize(Ctx.getSizeType()),
+                               KernelName.size() + 1);
+    QualType KernelNameArrayTy =
+        Ctx.getConstantArrayType(KernelNameCharTy, KernelNameSize, nullptr,
+                                 ArraySizeModifier::Normal, 0);
+    KernelNameExpr =
+        StringLiteral::Create(Ctx, KernelName, StringLiteralKind::Ordinary,
+                              /*Pascal*/ false, KernelNameArrayTy, BodyLoc);
+  } else {
+    KernelNameExpr = UnresolvedSYCLKernelNameExpr::Create(
+        Ctx, Ctx.getCanonicalType(KNT), BodyLoc);
+  }
 
   QualType ExternVarType = Ctx.getPointerType(Ctx.CharTy.withConst());
   ImplicitCastExpr *KernelNameArrayDecayExpr = new (Ctx) ImplicitCastExpr(
@@ -468,8 +475,8 @@ CompoundStmt *BuildSYCLKernelLaunchStmt(Sema &SemaRef, FunctionDecl *FD,
   TALI.addArgument(TAL);
   ExprResult IdExpr;
   if (Result.begin()->isCXXClassMember()) {
-    // BuildPossibleImplicitMemberExpr UnresolvedMemberExpr. Using it allows
-    // to pass implicit/explicit this argument automatically.
+    // BuildPossibleImplicitMemberExpr creates UnresolvedMemberExpr. Using it
+    // allows to pass implicit/explicit this argument automatically.
     IdExpr = SemaRef.BuildPossibleImplicitMemberExpr(SS, BodyLoc, Result, &TALI,
                                                      SemaRef.getCurScope());
   } else {
@@ -491,6 +498,8 @@ CompoundStmt *BuildSYCLKernelLaunchStmt(Sema &SemaRef, FunctionDecl *FD,
   return CompoundStmt::Create(Ctx, Stmts, FPOptionsOverride(), BodyLoc,
                               BodyLoc);
 }
+
+namespace {
 
 // The body of a function declared with the [[sycl_kernel_entry_point]]
 // attribute is cloned and transformed to substitute references to the original
@@ -577,37 +586,45 @@ OutlinedFunctionDecl *BuildSYCLKernelEntryPointOutline(Sema &SemaRef,
 } // unnamed namespace
 
 StmtResult SemaSYCL::BuildSYCLKernelCallStmt(FunctionDecl *FD,
-                                             CompoundStmt *Body) {
-  assert(!FD->isInvalidDecl());
-  assert(!FD->isTemplated());
-  assert(FD->hasPrototype());
+                                             CompoundStmt *Body,
+                                             CompoundStmt *LaunchStmt) {
 
   // The current context must be the function definition context to ensure
   // that name lookup and parameter and local variable creation are performed
   // within the correct scope.
-  assert(SemaRef.CurContext == FD);
 
-  const auto *SKEPAttr = FD->getAttr<SYCLKernelEntryPointAttr>();
-  assert(SKEPAttr && "Missing sycl_kernel_entry_point attribute");
-  assert(!SKEPAttr->isInvalidAttr() &&
-         "sycl_kernel_entry_point attribute is invalid");
+  // const auto *SKEPAttr = FD->getAttr<SYCLKernelEntryPointAttr>();
+  // assert(SKEPAttr && "Missing sycl_kernel_entry_point attribute");
+  // assert(!SKEPAttr->isInvalidAttr() &&
+  //        "sycl_kernel_entry_point attribute is invalid");
 
-  // Ensure that the kernel name was previously registered and that the
-  // stored declaration matches.
-  const SYCLKernelInfo &SKI =
-      getASTContext().getSYCLKernelInfo(SKEPAttr->getKernelName());
-  assert(declaresSameEntity(SKI.getKernelEntryPointDecl(), FD) &&
-         "SYCL kernel name conflict");
+  OutlinedFunctionDecl *OFD = nullptr;
+  if (FD) {
+    assert(SemaRef.CurContext == FD);
+    assert(!FD->isInvalidDecl());
+    //assert(!FD->isTemplated());
+    assert(FD->hasPrototype());
+    // const auto *SKEPAttr = FD->getAttr<SYCLKernelEntryPointAttr>();
+    // assert(SKEPAttr && "Missing sycl_kernel_entry_point attribute");
+    // assert(!SKEPAttr->isInvalidAttr() &&
+    //        "sycl_kernel_entry_point attribute is invalid");
 
-  // Build the kernel launch statement.
-  CompoundStmt *LaunchStmt = BuildSYCLKernelLaunchStmt(
-      SemaRef, FD, SKI.GetKernelName(), SKI.getKernelNameType());
-  assert(LaunchStmt);
+    // Ensure that the kernel name was previously registered and that the
+    // stored declaration matches.
+    // const SYCLKernelInfo &SKI =
+    //     getASTContext().getSYCLKernelInfo(SKEPAttr->getKernelName());
+    // assert(declaresSameEntity(SKI.getKernelEntryPointDecl(), FD) &&
+    //        "SYCL kernel name conflict");
 
-  // Build the outline of the synthesized device entry point function.
-  OutlinedFunctionDecl *OFD =
-      BuildSYCLKernelEntryPointOutline(SemaRef, FD, Body);
-  assert(OFD);
+    // Build the kernel launch statement.
+    // CompoundStmt *LaunchStmt = BuildSYCLKernelLaunchStmt(
+    //    SemaRef, FD, SKI.GetKernelName(), SKI.getKernelNameType());
+    // assert(LaunchStmt);
+
+    // Build the outline of the synthesized device entry point function.
+    OFD = BuildSYCLKernelEntryPointOutline(SemaRef, FD, Body);
+    assert(OFD);
+  }
 
   Stmt *NewBody =
       new (getASTContext()) SYCLKernelCallStmt(Body, LaunchStmt, OFD);

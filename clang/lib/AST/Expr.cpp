@@ -609,6 +609,34 @@ std::string SYCLUniqueStableNameExpr::ComputeName(ASTContext &Context,
   return Buffer;
 }
 
+UnresolvedSYCLKernelNameExpr::UnresolvedSYCLKernelNameExpr(SourceLocation L,
+                                                           QualType ExprTy,
+                                                           QualType KNT)
+    : Expr(UnresolvedSYCLKernelNameExprClass, ExprTy, VK_PRValue, OK_Ordinary),
+      KernelNameType(KNT), Loc(L) {
+  setDependence(computeDependence(this));
+}
+
+UnresolvedSYCLKernelNameExpr *
+UnresolvedSYCLKernelNameExpr::Create(const ASTContext &C, QualType T,
+                                     SourceLocation Loc) {
+  llvm::APInt KernelNameSize(C.getTypeSize(C.getSizeType()), 1);
+  QualType KernelNameArrayTy =
+      C.getConstantArrayType(C.CharTy.withConst(), KernelNameSize, nullptr,
+                             ArraySizeModifier::Normal, 0);
+  return new (C) UnresolvedSYCLKernelNameExpr(Loc, KernelNameArrayTy, T);
+}
+
+UnresolvedSYCLKernelNameExpr *
+UnresolvedSYCLKernelNameExpr::CreateEmpty(const ASTContext &C) {
+  llvm::APInt KernelNameSize(C.getTypeSize(C.getSizeType()), 1);
+  QualType KernelNameArrayTy =
+      C.getConstantArrayType(C.CharTy.withConst(), KernelNameSize, nullptr,
+                             ArraySizeModifier::Normal, 0);
+  return new (C)
+      UnresolvedSYCLKernelNameExpr({}, KernelNameArrayTy, KernelNameArrayTy);
+}
+
 PredefinedExpr::PredefinedExpr(SourceLocation L, QualType FNTy,
                                PredefinedIdentKind IK, bool IsTransparent,
                                StringLiteral *SL)
@@ -3647,6 +3675,7 @@ bool Expr::HasSideEffects(const ASTContext &Ctx,
   case PackIndexingExprClass:
   case HLSLOutArgExprClass:
   case OpenACCAsteriskSizeExprClass:
+  case UnresolvedSYCLKernelNameExprClass:
     // These never have a side-effect.
     return false;
 

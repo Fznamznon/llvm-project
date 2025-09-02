@@ -2040,6 +2040,9 @@ enum StmtCode {
   // SYCLUniqueStableNameExpr
   EXPR_SYCL_UNIQUE_STABLE_NAME,
 
+  // UnresolvedSYCLKernelName
+  EXPR_UNRESOLVED_SYCL_KERNEL_NAME,
+
   // OpenACC Constructs/Exprs
   STMT_OPENACC_COMPUTE_CONSTRUCT,
   STMT_OPENACC_LOOP_CONSTRUCT,

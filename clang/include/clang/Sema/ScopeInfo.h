@@ -245,6 +245,8 @@ public:
   /// The set of GNU address of label extension "&&label".
   llvm::SmallVector<AddrLabelExpr *, 4> AddrLabels;
 
+  CompoundStmt *SYCLKernelLaunchStmt = nullptr;
+
 public:
   /// Represents a simple identification of a weak object.
   ///
