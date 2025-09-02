@@ -16168,6 +16168,10 @@ Decl *Sema::ActOnStartOfFunctionDef(Scope *FnBodyScope, Decl *D,
 
   if (FD && !FD->isInvalidDecl() &&
       FD->hasAttr<SYCLKernelEntryPointAttr>() && FnBodyScope) {
+    // Building KernelLaunchStmt requires performing an unqualified lookup which
+    // can only be done correctly while the stack of parsing scopes is alive, so
+    // we do it here when we start parsing function body even if it is a
+    // templated function.
     const auto *SKEPAttr = FD->getAttr<SYCLKernelEntryPointAttr>();
     CompoundStmt *LaunchStmt =
         SYCL().BuildSYCLKernelLaunchStmt(FD, SKEPAttr->getKernelName());
@@ -16376,6 +16380,9 @@ Decl *Sema::ActOnFinishFunctionBody(Decl *dcl, Stmt *Body, bool IsInstantiation,
     }
 
     auto *BodyCompound = dyn_cast_or_null<CompoundStmt>(Body);
+    // If Body is not a compound, that was a templated function and we don't
+    // need to build SYCLKernelCallStmt for it since it was already created by
+    // template instantiator.
     if (BodyCompound && !SKEPAttr->isInvalidAttr()) {
       StmtResult SR = SYCL().BuildSYCLKernelCallStmt(
           FD->isTemplated() ? nullptr : FD, BodyCompound,

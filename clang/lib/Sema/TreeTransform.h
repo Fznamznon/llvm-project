@@ -12936,16 +12936,11 @@ ExprResult TreeTransform<Derived>::TransformSYCLUniqueStableNameExpr(
 template <typename Derived>
 ExprResult TreeTransform<Derived>::TransformUnresolvedSYCLKernelNameExpr(
     UnresolvedSYCLKernelNameExpr *E) {
-  // if (!E->isTypeDependent())
-  //   return E;
 
   QualType NewT = getDerived().TransformType(E->getKernelNameType());
 
   if (NewT.isNull())
     return ExprError();
-
-  // if (!getDerived().AlwaysRebuild() && E->getKernelNameType() == NewT)
-  //   return E;
 
   const ASTContext &Ctx = SemaRef.getASTContext();
   const SYCLKernelInfo *SKI = Ctx.findSYCLKernelInfo(NewT);
@@ -17762,14 +17757,10 @@ TreeTransform<Derived>::TransformCapturedStmt(CapturedStmt *S) {
 template <typename Derived>
 StmtResult
 TreeTransform<Derived>::TransformSYCLKernelCallStmt(SYCLKernelCallStmt *S) {
-  // SYCLKernelCallStmt nodes are inserted upon completion of a (non-template)
-  // function definition or instantiation of a function template specialization
-  // and will therefore never appear in a dependent context.
-  // llvm_unreachable("SYCL kernel call statement cannot appear in dependent "
-  //                  "context");
   StmtResult LaunchStmt = getDerived().TransformStmt(S->getKernelLaunchStmt());
   StmtResult OrigBody = getDerived().TransformStmt(S->getOriginalStmt());
   auto *FD = cast<FunctionDecl>(SemaRef.CurContext);
+  // TODO: perhaps add a RebuildKernelCallStmt?
   StmtResult SR = SemaRef.SYCL().BuildSYCLKernelCallStmt(
       FD, cast<CompoundStmt>(OrigBody.get()),
       cast<CompoundStmt>(LaunchStmt.get()));

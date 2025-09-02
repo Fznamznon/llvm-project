@@ -17819,6 +17819,7 @@ static ICEDiag CheckICE(const Expr* E, const ASTContext &Ctx) {
   case Expr::DependentCoawaitExprClass:
   case Expr::CoyieldExprClass:
   case Expr::SYCLUniqueStableNameExprClass:
+  case Expr::UnresolvedSYCLKernelNameExprClass:
   case Expr::CXXParenListInitExprClass:
   case Expr::HLSLOutArgExprClass:
     return ICEDiag(IK_NotICE, E->getBeginLoc());

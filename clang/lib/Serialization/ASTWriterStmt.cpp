@@ -674,10 +674,8 @@ void ASTStmtWriter::VisitUnresolvedSYCLKernelNameExpr(
     UnresolvedSYCLKernelNameExpr *E) {
   VisitExpr(E);
 
-  // Record.AddSourceLocation(E->getLocation());
-  // Record.AddSourceLocation(E->getLParenLocation());
-  // Record.AddSourceLocation(E->getRParenLocation());
-  // Record.AddTypeSourceInfo(E->getTypeSourceInfo());
+  Record.AddTypeRef(E->getKernelNameType());
+  Record.AddSourceLocation(E->getLocation());
 
   Code = serialization::EXPR_UNRESOLVED_SYCL_KERNEL_NAME;
 }

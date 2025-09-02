@@ -399,8 +399,6 @@ CompoundStmt *SemaSYCL::BuildSYCLKernelLaunchStmt(FunctionDecl *FD,
   SourceLocation BodyLoc =
       FD->getEndLoc().isValid() ? FD->getEndLoc() : FD->getLocation();
 
-  Sema::SynthesizedFunctionScope Scope(SemaRef, SemaRef.CurContext);
-
   IdentifierInfo &LaunchFooName =
       Ctx.Idents.get("sycl_enqueue_kernel_launch", tok::TokenKind::identifier);
 
@@ -423,18 +421,6 @@ CompoundStmt *SemaSYCL::BuildSYCLKernelLaunchStmt(FunctionDecl *FD,
   SemaRef.LookupTemplateName(Result, SemaRef.getCurScope(), SS,
                              /*ObjectType=*/QualType(),
                              /*EnteringContext=*/false, BodyLoc);
-
-  // If an unqualified lookup didn't find anything for us, enable lookup of a
-  // member by passing the parent class type. If we could create a correct scope
-  // object that corresponds to the FD, we wouldn't have to do this. However it
-  // seems the only correct way to create it is actually enter the scope when
-  // parsing it.
-  // if (Result.empty()) {
-  //   if (auto *MD = dyn_cast<CXXMethodDecl>(FD); MD && !MD->isStatic())
-  //     SemaRef.LookupTemplateName(Result, SemaRef.getCurScope(), SS,
-  //                                Ctx.getCanonicalTagType(MD->getParent()),
-  //                                /*EnteringContext=*/false, BodyLoc);
-  // }
 
   if (Result.empty() || Result.isAmbiguous()) {
     SemaRef.Diag(BodyLoc, SemaRef.getLangOpts().SYCLIsHost
@@ -464,9 +450,9 @@ CompoundStmt *SemaSYCL::BuildSYCLKernelLaunchStmt(FunctionDecl *FD,
         Ctx, Ctx.getCanonicalType(KNT), BodyLoc);
   }
 
-  QualType ExternVarType = Ctx.getPointerType(Ctx.CharTy.withConst());
+  QualType FuncParamTy = Ctx.getPointerType(Ctx.CharTy.withConst());
   ImplicitCastExpr *KernelNameArrayDecayExpr = new (Ctx) ImplicitCastExpr(
-      ImplicitCastExpr::OnStack, ExternVarType, CK_ArrayToPointerDecay,
+      ImplicitCastExpr::OnStack, FuncParamTy, CK_ArrayToPointerDecay,
       KernelNameExpr, VK_PRValue, FPOptionsOverride());
   TemplateArgumentListInfo TALI{BodyLoc, BodyLoc};
   TemplateArgument KNTA = TemplateArgument(KNT);
@@ -474,7 +460,7 @@ CompoundStmt *SemaSYCL::BuildSYCLKernelLaunchStmt(FunctionDecl *FD,
       SemaRef.getTrivialTemplateArgumentLoc(KNTA, QualType(), BodyLoc);
   TALI.addArgument(TAL);
   ExprResult IdExpr;
-  if (Result.begin()->isCXXClassMember()) {
+  if (Result.begin()->isCXXClassMember()) { // FIXME Should that be isPotentialImplicitAccess call?
     // BuildPossibleImplicitMemberExpr creates UnresolvedMemberExpr. Using it
     // allows to pass implicit/explicit this argument automatically.
     IdExpr = SemaRef.BuildPossibleImplicitMemberExpr(SS, BodyLoc, Result, &TALI,
@@ -483,6 +469,13 @@ CompoundStmt *SemaSYCL::BuildSYCLKernelLaunchStmt(FunctionDecl *FD,
     IdExpr = SemaRef.BuildTemplateIdExpr(SS, BodyLoc, Result,
                                          /*RequiresADL=*/true, &TALI);
   }
+
+  // Can happen if SKEP attributed function is a static member, but the launcher
+  // is a regular member. Perhaps emit a note saying that we're in host code
+  // synthesis.
+  if (IdExpr.isInvalid())
+    return CompoundStmt::Create(Ctx, Stmts, FPOptionsOverride(), BodyLoc,
+                                BodyLoc);
 
   llvm::SmallVector<Expr *, 12> Args;
   Args.push_back(KernelNameArrayDecayExpr);
@@ -588,38 +581,12 @@ OutlinedFunctionDecl *BuildSYCLKernelEntryPointOutline(Sema &SemaRef,
 StmtResult SemaSYCL::BuildSYCLKernelCallStmt(FunctionDecl *FD,
                                              CompoundStmt *Body,
                                              CompoundStmt *LaunchStmt) {
-
-  // The current context must be the function definition context to ensure
-  // that name lookup and parameter and local variable creation are performed
-  // within the correct scope.
-
-  // const auto *SKEPAttr = FD->getAttr<SYCLKernelEntryPointAttr>();
-  // assert(SKEPAttr && "Missing sycl_kernel_entry_point attribute");
-  // assert(!SKEPAttr->isInvalidAttr() &&
-  //        "sycl_kernel_entry_point attribute is invalid");
-
   OutlinedFunctionDecl *OFD = nullptr;
   if (FD) {
     assert(SemaRef.CurContext == FD);
     assert(!FD->isInvalidDecl());
-    //assert(!FD->isTemplated());
+    assert(!FD->isTemplated());
     assert(FD->hasPrototype());
-    // const auto *SKEPAttr = FD->getAttr<SYCLKernelEntryPointAttr>();
-    // assert(SKEPAttr && "Missing sycl_kernel_entry_point attribute");
-    // assert(!SKEPAttr->isInvalidAttr() &&
-    //        "sycl_kernel_entry_point attribute is invalid");
-
-    // Ensure that the kernel name was previously registered and that the
-    // stored declaration matches.
-    // const SYCLKernelInfo &SKI =
-    //     getASTContext().getSYCLKernelInfo(SKEPAttr->getKernelName());
-    // assert(declaresSameEntity(SKI.getKernelEntryPointDecl(), FD) &&
-    //        "SYCL kernel name conflict");
-
-    // Build the kernel launch statement.
-    // CompoundStmt *LaunchStmt = BuildSYCLKernelLaunchStmt(
-    //    SemaRef, FD, SKI.GetKernelName(), SKI.getKernelNameType());
-    // assert(LaunchStmt);
 
     // Build the outline of the synthesized device entry point function.
     OFD = BuildSYCLKernelEntryPointOutline(SemaRef, FD, Body);
