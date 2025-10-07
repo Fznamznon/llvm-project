@@ -21,6 +21,10 @@
 #include <mach/exception_types.h>
 #include <mach/mach_vm.h>
 #include <mach/task_info.h>
+#include <memory>
+#if __has_include(<os/security_config.h>)
+#include <os/security_config.h>
+#endif
 #include <pwd.h>
 #include <string>
 #include <sys/stat.h>
@@ -37,7 +41,6 @@
 #include "DNBLog.h"
 #include "DNBThreadResumeActions.h"
 #include "JSON.h"
-#include "JSONGenerator.h"
 #include "JSONGenerator.h"
 #include "MacOSX/Genealogy.h"
 #include "OsLogger.h"
@@ -502,6 +505,8 @@ void RNBRemote::CreatePacketTable() {
       memory_region_info, &RNBRemote::HandlePacket_MemoryRegionInfo, NULL,
       "qMemoryRegionInfo", "Return size and attributes of a memory region that "
                            "contains the given address"));
+  t.push_back(Packet(get_memory_tags, &RNBRemote::HandlePacket_qMemTags, NULL,
+                     "qMemTags", "Return tags for a region of memory"));
   t.push_back(Packet(get_profile_data, &RNBRemote::HandlePacket_GetProfileData,
                      NULL, "qGetProfileData",
                      "Return profiling data of the current target."));
@@ -820,7 +825,7 @@ rnb_err_t RNBRemote::GetPacketPayload(std::string &return_packet) {
   // (uint32_t)m_comm.Timer().ElapsedMicroSeconds(true), __FUNCTION__);
 
   {
-    PThreadMutex::Locker locker(m_mutex);
+    std::lock_guard<std::mutex> guard(m_mutex);
     if (m_rx_packets.empty()) {
       // Only reset the remote command available event if we have no more
       // packets
@@ -1052,7 +1057,7 @@ void RNBRemote::CommDataReceived(const std::string &new_data) {
   //  (uint32_t)m_comm.Timer().ElapsedMicroSeconds(true), __FUNCTION__);
 
   // Put the packet data into the buffer in a thread safe fashion
-  PThreadMutex::Locker locker(m_mutex);
+  std::lock_guard<std::mutex> guard(m_mutex);
 
   std::string data;
   // See if we have any left over data from a previous call to this
@@ -1477,7 +1482,6 @@ bool RNBRemote::InitializeRegisters(bool force) {
 
 void RNBRemote::NotifyThatProcessStopped(void) {
   RNBRemote::HandlePacket_last_signal(NULL);
-  return;
 }
 
 /* 'A arglen,argnum,arg,...'
@@ -3476,8 +3480,20 @@ static bool GetProcessNameFrom_vAttach(const char *&p,
   return return_val;
 }
 
+static bool supports_memory_tagging() {
+  const char *name = "hw.optional.arm.FEAT_MTE4";
+  uint32_t val;
+  size_t len = sizeof(val);
+  int ret = ::sysctlbyname(name, &val, &len, nullptr, 0);
+  if (ret != 0)
+    return false;
+
+  assert(len == sizeof(val));
+  return val;
+}
+
 rnb_err_t RNBRemote::HandlePacket_qSupported(const char *p) {
-  uint32_t max_packet_size = 128 * 1024; // 128KBytes is a reasonable max packet
+  uint32_t max_packet_size = 128 * 1024; // 128 KiB is a reasonable max packet
                                          // size--debugger can always use less
   std::stringstream reply;
   reply << "qXfer:features:read+;PacketSize=" << std::hex << max_packet_size
@@ -3505,6 +3521,9 @@ rnb_err_t RNBRemote::HandlePacket_qSupported(const char *p) {
 #if defined(__x86_64__)
   reply << "SupportedWatchpointTypes=x86_64;";
 #endif
+
+  if (supports_memory_tagging())
+    reply << "memory-tagging+;";
 
   return SendPacket(reply.str().c_str());
 }
@@ -4252,7 +4271,6 @@ rnb_err_t RNBRemote::HandlePacket_MemoryRegionInfo(const char *p) {
      is in unmapped memory
          Region lookup cannot be performed on this platform or process is not
      yet launched
-         This packet isn't implemented
 
      Examples of use:
         qMemoryRegionInfo:3a55140
@@ -4304,6 +4322,16 @@ rnb_err_t RNBRemote::HandlePacket_MemoryRegionInfo(const char *p) {
       ostrm << 'x';
     ostrm << ';';
 
+    if (!region_info.flags.empty()) {
+      ostrm << "flags:";
+      for (size_t i = 0; i < region_info.flags.size(); i++) {
+        if (i != 0)
+          ostrm << " "; // Separator is whitespace
+        ostrm << region_info.flags[i];
+      }
+      ostrm << ";";
+    }
+
     ostrm << "dirty-pages:";
     if (region_info.dirty_pages.size() > 0) {
       bool first = true;
@@ -4325,6 +4353,62 @@ rnb_err_t RNBRemote::HandlePacket_MemoryRegionInfo(const char *p) {
       ostrm << ";";
     }
   }
+  return SendPacket(ostrm.str());
+}
+
+// qMemTags:<hex address>,<hex length>:<hex type>
+rnb_err_t RNBRemote::HandlePacket_qMemTags(const char *p) {
+  nub_process_t pid = m_ctx.ProcessID();
+  if (pid == INVALID_NUB_PROCESS)
+    return SendPacket("OK");
+
+  StdStringExtractor packet(p);
+  packet.SetFilePos(strlen("qMemTags:"));
+
+  // Address
+  nub_addr_t addr =
+      packet.GetHexMaxU64(StdStringExtractor::BigEndian, INVALID_NUB_ADDRESS);
+  if (addr == INVALID_NUB_ADDRESS)
+    return HandlePacket_ILLFORMED(__FILE__, __LINE__, p,
+                                  "Invalid/missing address in qMemTags packet");
+  // ,
+  if (packet.GetChar() != ',')
+    return HandlePacket_ILLFORMED(__FILE__, __LINE__, p,
+                                  "Invalid qMemTags packet format");
+  // Length
+  uint64_t length = packet.GetHexMaxU64(StdStringExtractor::BigEndian, 0);
+  if (length == 0)
+    return HandlePacket_ILLFORMED(__FILE__, __LINE__, p,
+                                  "Invalid/missing length in qMemTags packet");
+  // :
+  if (packet.GetChar() != ':')
+    return HandlePacket_ILLFORMED(__FILE__, __LINE__, p,
+                                  "Invalid qMemTags packet format");
+  // Type
+  // On the LLDB side this is a `int32_t` serialized as (unsigned) hex, which
+  // means negative values will show up as large positive values here.  Right
+  // now, we only support MTE (type 1), so we can ignore this complication.
+  uint32_t type = packet.GetHexMaxU32(StdStringExtractor::BigEndian, 0);
+  if (type != 1 /* MTE */)
+    return HandlePacket_ILLFORMED(__FILE__, __LINE__, p,
+                                  "Invalid/missing type in qMemTags packet, "
+                                  "only MTE (type 1) is supported");
+  // <EOF>
+  if (packet.GetBytesLeft() != 0)
+    return HandlePacket_ILLFORMED(__FILE__, __LINE__, p,
+                                  "Invalid qMemTags packet format");
+
+  std::vector<uint8_t> tags;
+  bool ok = DNBProcessGetMemoryTags(pid, addr, length, tags);
+  if (!ok)
+    return SendErrorPacket("E91");
+
+  std::ostringstream ostrm;
+  ostrm << "m"; // Multi part replies
+  for (uint8_t tag : tags) {
+    ostrm << RAWHEX8(tag); // 2 hex chars per tag
+  }
+
   return SendPacket(ostrm.str());
 }
 
@@ -4424,12 +4508,12 @@ rnb_err_t RNBRemote::HandlePacket_qSpeedTest(const char *p) {
     return HandlePacket_ILLFORMED(
         __FILE__, __LINE__, p,
         "Didn't find response_size value at right offset");
-  else if (*end == ';') {
-    static char g_data[4 * 1024 * 1024 + 16];
-    strcpy(g_data, "data:");
-    memset(g_data + 5, 'a', response_size);
-    g_data[response_size + 5] = '\0';
-    return SendPacket(g_data);
+  else if (*end == ';' && response_size < (4 * 1024 * 1024)) {
+    std::vector<char> buf(response_size + 6, 'a');
+    memcpy(buf.data(), "data:", 5);
+    buf[buf.size() - 1] = '\0';
+    rnb_err_t return_value = SendPacket(buf.data());
+    return return_value;
   } else {
     return SendErrorPacket("E79");
   }
@@ -5412,9 +5496,8 @@ RNBRemote::GetJSONThreadsInfo(bool threads_with_valid_stop_info_only) {
             JSONGenerator::ArraySP medata_array_sp(new JSONGenerator::Array());
             for (nub_size_t i = 0;
                  i < tid_stop_info.details.exception.data_count; ++i) {
-              medata_array_sp->AddItem(
-                  JSONGenerator::IntegerSP(new JSONGenerator::Integer(
-                      tid_stop_info.details.exception.data[i])));
+              medata_array_sp->AddItem(std::make_shared<JSONGenerator::Integer>(
+                  tid_stop_info.details.exception.data[i]));
             }
             thread_dict_sp->AddItem("medata", medata_array_sp);
           }
@@ -6164,6 +6247,21 @@ GetCPUTypesFromHost(nub_process_t pid) {
   return {cputype, cpusubtype};
 }
 
+static bool ProcessRunningWithMemoryTagging(pid_t pid) {
+#if __has_include(<os/security_config.h>)
+  if (__builtin_available(macOS 26.0, iOS 26.0, tvOS 26.0, watchOS 26.0,
+                          visionOS 26.0, driverkit 25.0, *)) {
+    os_security_config_t config;
+    int ret = ::os_security_config_get_for_proc(pid, &config);
+    if (ret != 0)
+      return false;
+
+    return (config & OS_SECURITY_CONFIG_MTE);
+  }
+#endif
+  return false;
+}
+
 // Note that all numeric values returned by qProcessInfo are hex encoded,
 // including the pid and the cpu type.
 
@@ -6339,6 +6437,9 @@ rnb_err_t RNBRemote::HandlePacket_qProcessInfo(const char *p) {
   }
 
   rep << "vendor:apple;";
+
+  if (ProcessRunningWithMemoryTagging(pid))
+    rep << "mte:enabled;";
 
 #if defined(__LITTLE_ENDIAN__)
   rep << "endian:little;";
