@@ -1499,9 +1499,7 @@ static void EmitConditionalArrayDtorCall(const CXXDestructorDecl *DD,
   CGF.EmitBlock(callDeleteBB);
   const CXXDestructorDecl *Dtor = cast<CXXDestructorDecl>(CGF.CurCodeDecl);
   const CXXRecordDecl *ClassDecl = Dtor->getParent();
-  assert((Dtor->getArrayOperatorDelete() ||
-          Dtor->getGlobalArrayOperatorDelete()) &&
-         "Some operator delete[] should be present");
+  assert(Dtor->getArrayOperatorDelete());
   if (!Dtor->getGlobalArrayOperatorDelete()) {
     CGF.EmitDeleteCall(Dtor->getArrayOperatorDelete(), allocatedPtr,
                        CGF.getContext().getCanonicalTagType(ClassDecl));
@@ -1521,13 +1519,9 @@ static void EmitConditionalArrayDtorCall(const CXXDestructorDecl *DD,
     CGF.Builder.CreateCondBr(ShouldCallGlobDelete, ClassDelete,
                              GlobDelete);
     CGF.EmitBlock(ClassDelete);
-    if (Dtor->getArrayOperatorDelete()) {
-      CGF.EmitDeleteCall(Dtor->getArrayOperatorDelete(), allocatedPtr,
-                         CGF.getContext().getCanonicalTagType(ClassDecl));
-      CGF.EmitBranchThroughCleanup(CGF.ReturnBlock);
-    } else {
-      CGF.Builder.CreateUnreachable();
-    }
+    CGF.EmitDeleteCall(Dtor->getArrayOperatorDelete(), allocatedPtr,
+                       CGF.getContext().getCanonicalTagType(ClassDecl));
+    CGF.EmitBranchThroughCleanup(CGF.ReturnBlock);
 
     CGF.EmitBlock(GlobDelete);
     CGF.EmitDeleteCall(Dtor->getGlobalArrayOperatorDelete(), allocatedPtr,

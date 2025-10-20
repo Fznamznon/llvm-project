@@ -2,6 +2,9 @@
 // RUN: %clang_cc1 %s -verify=expected -fsyntax-only -triple=x86_64-unknown-linux-gnu -std=c++20
 // RUN: %clang_cc1 %s -verify=expected,ms -fms-extensions -fms-compatibility -triple=x86_64-pc-windows-msvc -DMS
 
+// Verify that clang doesn't emit additional errors when searching for
+// additional operators delete for vector deleting destructors support.
+
 struct Foo {
   virtual ~Foo() {} // expected-error {{attempt to use a deleted function}}
   static void operator delete(void* ptr) = delete; // expected-note {{explicitly marked deleted here}}
@@ -15,8 +18,7 @@ struct Bar {
 
 struct Baz {
   virtual ~Baz() {}
-  static void operator delete[](void* ptr) = delete; // expected-note {{explicitly marked deleted here}}\
-                                                        ms-note{{explicitly marked deleted here}}}
+  static void operator delete[](void* ptr) = delete; // expected-note {{explicitly marked deleted here}}
 };
 
 struct BarBaz {
@@ -25,16 +27,16 @@ struct BarBaz {
 };
 
 void foobar() {
-  Baz *B = new Baz[10](); // ms-error {{attempt to use a deleted function}}
+  Baz *B = new Baz[10]();
   delete [] B; // expected-error {{attempt to use a deleted function}}
   BarBaz *BB = new BarBaz[10]();
 }
 
 struct BaseDelete1 {
-  void operator delete[](void *); //ms-note 3{{member found by ambiguous name lookup}}
+  void operator delete[](void *);
 };
 struct BaseDelete2 {
-  void operator delete[](void *); //ms-note 3{{member found by ambiguous name lookup}}
+  void operator delete[](void *);
 };
 struct BaseDestructor {
   BaseDestructor() {}
@@ -50,11 +52,11 @@ struct FinalExplicit : BaseDelete1, BaseDelete2, BaseDestructor {
 
 #ifdef MS
 struct Final1 : BaseDelete1, BaseDelete2, BaseDestructor {
-  __declspec(dllexport) ~Final1() {} // ms-error {{member 'operator delete[]' found in multiple base classes of different types}}
+  __declspec(dllexport) ~Final1() {}
 };
 #endif // MS
 
 void foo() {
-    Final* a = new Final[10](); // ms-error {{member 'operator delete[]' found in multiple base classes of different types}}
-    FinalExplicit* b = new FinalExplicit[10](); // ms-error {{member 'operator delete[]' found in multiple base classes of different types}}
+    Final* a = new Final[10]();
+    FinalExplicit* b = new FinalExplicit[10]();
 }

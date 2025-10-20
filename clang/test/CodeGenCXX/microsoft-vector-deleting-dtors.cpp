@@ -116,8 +116,13 @@ void bar() {
 // Definition of S::foo, check that it has vector deleting destructor call
 // X64-LABEL: define linkonce_odr dso_local void @"?foo@?$S@$$BY102UAllocatedAsArray@@@@QEAAXXZ"
 // X86-LABEL: define linkonce_odr dso_local x86_thiscallcc void @"?foo@?$S@$$BY102UAllocatedAsArray@@@@QAEXXZ"
-// CHECK: delete.notnull:                                   ; preds = %arrayctor.cont
-// CHECK-NEXT:   %[[DEL_PTR:.*]] = getelementptr inbounds [1 x [3 x %struct.AllocatedAsArray]], ptr %[[THE_ARRAY:.*]], i32 0, i32 0
+// X64: %[[NEWCALL:.*]] = call noalias noundef nonnull ptr @"??_U@YAPEAX_K@Z"(i64 noundef 32)
+// X86: %[[NEWCALL:.*]] = call noalias noundef nonnull ptr @"??_U@YAPAXI@Z"(i32 noundef 16)
+// X64: %[[ARR:.*]] = getelementptr inbounds i8, ptr %[[NEWCALL]], i64 8
+// X86: %[[ARR:.*]] = getelementptr inbounds i8, ptr %[[NEWCALL]], i32 4
+// CHECK: store ptr %[[ARR]], ptr %[[DP:.*]]
+// CHECK: %[[DEL_PTR:.*]] = load ptr, ptr %[[DP:.*]]
+// CHECK: delete.notnull:
 // X64-NEXT:   %[[COOKIEGEP:.*]] = getelementptr inbounds i8, ptr %[[DEL_PTR]], i64 -8
 // X86-NEXT:   %[[COOKIEGEP:.*]] = getelementptr inbounds i8, ptr %[[DEL_PTR]], i32 -4
 // X64-NEXT:   %[[HOWMANY:.*]] = load i64, ptr %[[COOKIEGEP]]
@@ -207,10 +212,10 @@ void bar() {
 
 // X64-LABEL: define weak dso_local noundef ptr @"??_EHasOperatorDelete@@UEAAPEAXI@Z"
 // X86-LABEL: define weak dso_local x86_thiscallcc noundef ptr @"??_EHasOperatorDelete@@UAEPAXI@Z"
-// CHECK: dtor.call_delete_after_array_destroy:
+// CHECK: dtor.call_class_delete_after_array_destroy:
 // X64-NEXT: call void @"??_VHasOperatorDelete@@SAXPEAX@Z"
 // X86-NEXT: call void @"??_VHasOperatorDelete@@SAXPAX@Z"
-// CHECK: dtor.call_delete:
+// CHECK: dtor.call_class_delete:
 // X64-NEXT: call void @"??3HasOperatorDelete@@SAXPEAX@Z"
 // X86-NEXT: call void @"??3HasOperatorDelete@@SAXPAX@Z"
 

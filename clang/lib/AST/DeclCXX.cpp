@@ -3110,26 +3110,17 @@ CXXDestructorDecl *CXXDestructorDecl::Create(
 }
 
 void CXXDestructorDecl::setOperatorDelete(FunctionDecl *OD, Expr *ThisArg) {
-  auto *First = cast<CXXDestructorDecl>(getFirstDecl());
-  if (OD && !First->OperatorDelete) {
-    First->OperatorDelete = OD;
-    First->OperatorDeleteThisArg = ThisArg;
+  assert(!OD || (OD->getDeclName().getCXXOverloadedOperator() == OO_Delete));
+  if (!getASTContext().dtorHasOperatorDelete(
+          this, ASTContext::OperatorDeleteKind::Regular)) {
+    getASTContext().addOperatorDeleteForVDtor(
+        this, OD, ASTContext::OperatorDeleteKind::Regular);
     if (auto *L = getASTMutationListener())
-      L->ResolvedOperatorDelete(First, OD, ThisArg);
+      L->ResolvedOperatorDelete(cast<CXXDestructorDecl>(getCanonicalDecl()), OD,
+                                ThisArg);
   }
 }
 
-void CXXDestructorDecl::setOperatorArrayDelete(FunctionDecl *OD) {
-  auto *First = cast<CXXDestructorDecl>(getFirstDecl());
-  if (OD && !First->OperatorArrayDelete)
-    First->OperatorArrayDelete = OD;
-}
-
-void CXXDestructorDecl::setGlobalOperatorArrayDelete(FunctionDecl *OD) {
-  auto *First = cast<CXXDestructorDecl>(getFirstDecl());
-  if (OD && !First->OperatorGlobalArrayDelete)
-    First->OperatorGlobalArrayDelete = OD;
-}
 void CXXDestructorDecl::setOperatorGlobalDelete(FunctionDecl *OD) {
   // FIXME: C++23 [expr.delete] specifies that the delete operator will be
   // a usual deallocation function declared at global scope. A convenient
@@ -3138,12 +3129,61 @@ void CXXDestructorDecl::setOperatorGlobalDelete(FunctionDecl *OD) {
   assert(!OD ||
          (OD->getDeclName().getCXXOverloadedOperator() == OO_Delete &&
           OD->getDeclContext()->getRedeclContext()->isTranslationUnit()));
-  auto *Canonical = cast<CXXDestructorDecl>(getCanonicalDecl());
-  if (!Canonical->OperatorGlobalDelete) {
-    Canonical->OperatorGlobalDelete = OD;
+  if (!getASTContext().dtorHasOperatorDelete(
+          this, ASTContext::OperatorDeleteKind::GlobalRegular)) {
+    getASTContext().addOperatorDeleteForVDtor(
+        this, OD, ASTContext::OperatorDeleteKind::GlobalRegular);
     if (auto *L = getASTMutationListener())
-      L->ResolvedOperatorGlobDelete(Canonical, OD);
+      L->ResolvedOperatorGlobDelete(cast<CXXDestructorDecl>(getCanonicalDecl()),
+                                    OD);
   }
+}
+
+void CXXDestructorDecl::setOperatorArrayDelete(FunctionDecl *OD) {
+  assert(!OD ||
+         (OD->getDeclName().getCXXOverloadedOperator() == OO_Array_Delete));
+  if (!getASTContext().dtorHasOperatorDelete(
+          this, ASTContext::OperatorDeleteKind::Array)) {
+    getASTContext().addOperatorDeleteForVDtor(
+        this, OD, ASTContext::OperatorDeleteKind::Array);
+    if (auto *L = getASTMutationListener())
+      L->ResolvedOperatorArrayDelete(
+          cast<CXXDestructorDecl>(getCanonicalDecl()), OD);
+  }
+}
+
+void CXXDestructorDecl::setGlobalOperatorArrayDelete(FunctionDecl *OD) {
+  assert(!OD ||
+         (OD->getDeclName().getCXXOverloadedOperator() == OO_Array_Delete &&
+          OD->getDeclContext()->getRedeclContext()->isTranslationUnit()));
+  if (!getASTContext().dtorHasOperatorDelete(
+          this, ASTContext::OperatorDeleteKind::ArrayGlobal)) {
+    getASTContext().addOperatorDeleteForVDtor(
+        this, OD, ASTContext::OperatorDeleteKind::ArrayGlobal);
+    if (auto *L = getASTMutationListener())
+      L->ResolvedOperatorGlobArrayDelete(
+          cast<CXXDestructorDecl>(getCanonicalDecl()), OD);
+  }
+}
+
+const FunctionDecl *CXXDestructorDecl::getOperatorDelete() const {
+  return getASTContext().getOperatorDeleteForVDtor(
+      this, ASTContext::OperatorDeleteKind::Regular);
+}
+
+const FunctionDecl *CXXDestructorDecl::getOperatorGlobalDelete() const {
+  return getASTContext().getOperatorDeleteForVDtor(
+      this, ASTContext::OperatorDeleteKind::GlobalRegular);
+}
+
+const FunctionDecl *CXXDestructorDecl::getArrayOperatorDelete() const {
+  return getASTContext().getOperatorDeleteForVDtor(
+      this, ASTContext::OperatorDeleteKind::Array);
+}
+
+const FunctionDecl *CXXDestructorDecl::getGlobalArrayOperatorDelete() const {
+  return getASTContext().getOperatorDeleteForVDtor(
+      this, ASTContext::OperatorDeleteKind::ArrayGlobal);
 }
 
 bool CXXDestructorDecl::isCalledByDelete(const FunctionDecl *OpDel) const {
@@ -3157,7 +3197,8 @@ bool CXXDestructorDecl::isCalledByDelete(const FunctionDecl *OpDel) const {
   // delete operator, as that destructor is never called, unless the
   // destructor is virtual (see [expr.delete]p8.1) because then the
   // selected operator depends on the dynamic type of the pointer.
-  const FunctionDecl *SelectedOperatorDelete = OpDel ? OpDel : OperatorDelete;
+  const FunctionDecl *SelectedOperatorDelete =
+      OpDel ? OpDel : getOperatorDelete();
   if (!SelectedOperatorDelete)
     return true;
 

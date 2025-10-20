@@ -115,14 +115,9 @@ void call_deleting_dtor_and_global_delete(C *obj_ptr) {
 // CHECK-NEXT:   %[[VTABLE:.*]] = load ptr, ptr %[[OBJ_PTR_VALUE]]
 // CHECK-NEXT:   %[[PVDTOR:.*]] = getelementptr inbounds ptr, ptr %[[VTABLE]], i64 0
 // CHECK-NEXT:   %[[VDTOR:.*]] = load ptr, ptr %[[PVDTOR]]
-<<<<<<< HEAD
-// CHECK-NEXT:   %[[CALL:.*]] = call x86_thiscallcc ptr %[[VDTOR]](ptr {{[^,]*}} %[[OBJ_PTR_VALUE]], i32 4)
-// CHECK-NEXT:   call void @"??3@YAXPAX@Z"(ptr %[[CALL]])
-=======
 // CLANG22-NEXT:   %[[CALL:.*]] = call x86_thiscallcc ptr %[[VDTOR]](ptr {{[^,]*}} %[[OBJ_PTR_VALUE]], i32 5)
 // CLANG21-NEXT:   %[[CALL:.*]] = call x86_thiscallcc ptr %[[VDTOR]](ptr {{[^,]*}} %[[OBJ_PTR_VALUE]], i32 0)
 // CLANG21-NEXT: call void @"??3@YAXPAX@Z"(ptr %[[CALL]])
->>>>>>> main
 // CHECK:      ret void
 }
 

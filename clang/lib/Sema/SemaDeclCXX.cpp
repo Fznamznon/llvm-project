@@ -11144,7 +11144,7 @@ bool Sema::CheckDestructor(CXXDestructorDecl *Destructor) {
         Context.DeclarationNames.getCXXOperatorName(OO_Delete);
     // If we have a virtual destructor, look up the deallocation function
     if (FunctionDecl *OperatorDelete = FindDeallocationFunctionForDestructor(
-            Loc, RD, /*Diagnose=*/true, /*LookForGlobal=*/false)) {
+            Loc, RD, /*Diagnose=*/true, /*LookForGlobal=*/false, Name)) {
       Expr *ThisArg = nullptr;
 
       // If the notional 'delete this' expression requires a non-trivial
@@ -11179,21 +11179,6 @@ bool Sema::CheckDestructor(CXXDestructorDecl *Destructor) {
       DiagnoseUseOfDecl(OperatorDelete, Loc);
       MarkFunctionReferenced(Loc, OperatorDelete);
       Destructor->setOperatorDelete(OperatorDelete, ThisArg);
-      if (Context.getTargetInfo().getCXXABI().isMicrosoft()) {
-        // Lookup delete[] too in case we have to emit a vector deleting dtor;
-        DeclarationName VDeleteName =
-            Context.DeclarationNames.getCXXOperatorName(OO_Array_Delete);
-        // If the class has operator delete[], valid or not, we need to check
-        // the 4th bit of the implicit parameter, so track that.
-        FunctionDecl *ArrOperatorDelete = nullptr;
-        FunctionDecl *GlobalArrOperatorDelete = nullptr;
-        FindDeallocationFunctionForMSCVVectorDeletingDestructor(
-            Loc, RD, VDeleteName, ArrOperatorDelete, GlobalArrOperatorDelete);
-        Destructor->setOperatorArrayDelete(ArrOperatorDelete);
-        Destructor->setGlobalOperatorArrayDelete(GlobalArrOperatorDelete);
-        assert((GlobalArrOperatorDelete || ArrOperatorDelete) &&
-               "Not even global array delete?");
-      }
 
       if (isa<CXXMethodDecl>(OperatorDelete) &&
           Context.getTargetInfo().callGlobalDeleteInDeletingDtor(
@@ -11207,8 +11192,36 @@ bool Sema::CheckDestructor(CXXDestructorDecl *Destructor) {
         // delete calls that require it.
         FunctionDecl *GlobalOperatorDelete =
             FindDeallocationFunctionForDestructor(Loc, RD, /*Diagnose*/ false,
-                                                  /*LookForGlobal*/ true);
+                                                  /*LookForGlobal*/ true, Name);
         Destructor->setOperatorGlobalDelete(GlobalOperatorDelete);
+      }
+
+      if (Context.getTargetInfo().getCXXABI().isMicrosoft()) {
+        // Lookup delete[] too in case we have to emit a vector deleting dtor;
+        DeclarationName VDeleteName =
+            Context.DeclarationNames.getCXXOperatorName(OO_Array_Delete);
+        // If the class has operator delete[], valid or not, we need to check
+        // the 4th bit of the implicit parameter, so track that.
+        FunctionDecl *ArrOperatorDelete = FindDeallocationFunctionForDestructor(
+            Loc, RD, /*Diagnose*/ false,
+            /*LookForGlobal*/ false, VDeleteName);
+        if (ArrOperatorDelete && isa<CXXMethodDecl>(ArrOperatorDelete)) {
+          FunctionDecl *GlobalArrOperatorDelete =
+              FindDeallocationFunctionForDestructor(Loc, RD, /*Diagnose*/ false,
+                                                    /*LookForGlobal*/ true,
+                                                    VDeleteName);
+          Destructor->setGlobalOperatorArrayDelete(GlobalArrOperatorDelete);
+        } else if (!ArrOperatorDelete) {
+          ArrOperatorDelete =
+              FindDeallocationFunctionForDestructor(Loc, RD, /*Diagnose*/ false,
+                                                    /*LookForGlobal*/ true,
+                                                    VDeleteName);
+        }
+        assert(ArrOperatorDelete);
+        Destructor->setOperatorArrayDelete(ArrOperatorDelete);
+
+        // assert((GlobalArrOperatorDelete || ArrOperatorDelete) &&
+        //        "Not even global array delete?");
       }
     }
   }
