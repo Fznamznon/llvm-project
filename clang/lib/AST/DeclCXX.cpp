@@ -3111,10 +3111,11 @@ CXXDestructorDecl *CXXDestructorDecl::Create(
 
 void CXXDestructorDecl::setOperatorDelete(FunctionDecl *OD, Expr *ThisArg) {
   assert(!OD || (OD->getDeclName().getCXXOverloadedOperator() == OO_Delete));
-  if (!getASTContext().dtorHasOperatorDelete(
+  if (OD && !getASTContext().dtorHasOperatorDelete(
           this, ASTContext::OperatorDeleteKind::Regular)) {
     getASTContext().addOperatorDeleteForVDtor(
         this, OD, ASTContext::OperatorDeleteKind::Regular);
+    getCanonicalDecl()->OperatorDeleteThisArg = ThisArg;
     if (auto *L = getASTMutationListener())
       L->ResolvedOperatorDelete(cast<CXXDestructorDecl>(getCanonicalDecl()), OD,
                                 ThisArg);
@@ -3129,7 +3130,7 @@ void CXXDestructorDecl::setOperatorGlobalDelete(FunctionDecl *OD) {
   assert(!OD ||
          (OD->getDeclName().getCXXOverloadedOperator() == OO_Delete &&
           OD->getDeclContext()->getRedeclContext()->isTranslationUnit()));
-  if (!getASTContext().dtorHasOperatorDelete(
+  if (OD && !getASTContext().dtorHasOperatorDelete(
           this, ASTContext::OperatorDeleteKind::GlobalRegular)) {
     getASTContext().addOperatorDeleteForVDtor(
         this, OD, ASTContext::OperatorDeleteKind::GlobalRegular);
@@ -3142,7 +3143,7 @@ void CXXDestructorDecl::setOperatorGlobalDelete(FunctionDecl *OD) {
 void CXXDestructorDecl::setOperatorArrayDelete(FunctionDecl *OD) {
   assert(!OD ||
          (OD->getDeclName().getCXXOverloadedOperator() == OO_Array_Delete));
-  if (!getASTContext().dtorHasOperatorDelete(
+  if (OD && !getASTContext().dtorHasOperatorDelete(
           this, ASTContext::OperatorDeleteKind::Array)) {
     getASTContext().addOperatorDeleteForVDtor(
         this, OD, ASTContext::OperatorDeleteKind::Array);
@@ -3156,7 +3157,7 @@ void CXXDestructorDecl::setGlobalOperatorArrayDelete(FunctionDecl *OD) {
   assert(!OD ||
          (OD->getDeclName().getCXXOverloadedOperator() == OO_Array_Delete &&
           OD->getDeclContext()->getRedeclContext()->isTranslationUnit()));
-  if (!getASTContext().dtorHasOperatorDelete(
+  if (OD && !getASTContext().dtorHasOperatorDelete(
           this, ASTContext::OperatorDeleteKind::ArrayGlobal)) {
     getASTContext().addOperatorDeleteForVDtor(
         this, OD, ASTContext::OperatorDeleteKind::ArrayGlobal);
