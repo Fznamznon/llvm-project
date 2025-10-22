@@ -148,7 +148,6 @@ public:
   }
 
   bool shouldTypeidBeNullChecked(QualType SrcRecordTy) override;
-  bool hasVectorDeletingDtors() override { return true; }
   void EmitBadTypeidCall(CodeGenFunction &CGF) override;
   llvm::Value *EmitTypeid(CodeGenFunction &CGF, QualType SrcRecordTy,
                           Address ThisPtr,
@@ -270,7 +269,11 @@ public:
 
         // There's only Dtor_Deleting in vftable but it shares the this
         // adjustment with the base one, so look up the deleting one instead.
-        LookupGD = GlobalDecl(DD, Dtor_VectorDeleting);
+        LookupGD = GlobalDecl(
+            DD, CGM.getContext().getTargetInfo().emitVectorDeletingDtors(
+                    CGM.getContext().getLangOpts())
+                    ? Dtor_VectorDeleting
+                    : Dtor_Deleting);
       }
       MethodVFTableLocation ML =
           CGM.getMicrosoftVTableContext().getMethodVFTableLocation(LookupGD);
@@ -352,7 +355,8 @@ public:
 
   void adjustCallArgsForDestructorThunk(CodeGenFunction &CGF, GlobalDecl GD,
                                         CallArgList &CallArgs) override {
-    assert(GD.getDtorType() == Dtor_VectorDeleting &&
+    assert((GD.getDtorType() == Dtor_VectorDeleting ||
+            GD.getDtorType() == Dtor_Deleting) &&
            "Only vector deleting destructor thunks are available in this ABI");
     CallArgs.add(RValue::get(getStructorImplicitParamValue(CGF)),
                  getContext().IntTy);
@@ -1468,7 +1472,11 @@ MicrosoftCXXABI::getVirtualFunctionPrologueThisAdjustment(GlobalDecl GD) {
 
     // There's no Dtor_Base in vftable but it shares the this adjustment with
     // the deleting one, so look it up instead.
-    GD = GlobalDecl(DD, Dtor_VectorDeleting);
+    GD =
+        GlobalDecl(DD, CGM.getContext().getTargetInfo().emitVectorDeletingDtors(
+                           CGM.getContext().getLangOpts())
+                           ? Dtor_VectorDeleting
+                           : Dtor_Deleting);
   }
 
   MethodVFTableLocation ML =
@@ -1517,7 +1525,11 @@ Address MicrosoftCXXABI::adjustThisArgumentForVirtualFunctionCall(
 
     // There's only Dtor_Deleting in vftable but it shares the this adjustment
     // with the base one, so look up the deleting one instead.
-    LookupGD = GlobalDecl(DD, Dtor_VectorDeleting);
+    LookupGD =
+        GlobalDecl(DD, CGM.getContext().getTargetInfo().emitVectorDeletingDtors(
+                           CGM.getContext().getLangOpts())
+                           ? Dtor_VectorDeleting
+                           : Dtor_Deleting);
   }
   MethodVFTableLocation ML =
       CGM.getMicrosoftVTableContext().getMethodVFTableLocation(LookupGD);
@@ -2033,15 +2045,18 @@ llvm::Value *MicrosoftCXXABI::EmitVirtualDestructorCall(
 
   // We have only one destructor in the vftable but can get both behaviors
   // by passing an implicit int parameter.
-  GlobalDecl GD(Dtor, Dtor_VectorDeleting);
+  ASTContext &Context = getContext();
+  bool VectorDeletingDtorsEnabled =
+      Context.getTargetInfo().emitVectorDeletingDtors(Context.getLangOpts());
+  GlobalDecl GD(Dtor, VectorDeletingDtorsEnabled ? Dtor_VectorDeleting
+                                                 : Dtor_Deleting);
   const CGFunctionInfo *FInfo =
       &CGM.getTypes().arrangeCXXStructorDeclaration(GD);
   llvm::FunctionType *Ty = CGF.CGM.getTypes().GetFunctionType(*FInfo);
   CGCallee Callee = CGCallee::forVirtual(CE, GD, This, Ty);
 
-  ASTContext &Context = getContext();
   bool IsDeleting = DtorType == Dtor_Deleting;
-  bool IsArrayDelete = D && D->isArrayForm();
+  bool IsArrayDelete = D && D->isArrayForm() && VectorDeletingDtorsEnabled;
   bool IsGlobalDelete = D && D->isGlobalDelete() &&
                         Context.getTargetInfo().callGlobalDeleteInDeletingDtor(
                             Context.getLangOpts());

@@ -1206,7 +1206,8 @@ void CodeGenFunction::EmitNewArrayInitializer(
     EmitCXXAggrConstructorCall(Ctor, NumElements, CurPtr, CCE,
                                /*NewPointerIsChecked*/true,
                                CCE->requiresZeroInitialization());
-    if (CGM.getCXXABI().hasVectorDeletingDtors())
+    if (CGM.getContext().getTargetInfo().emitVectorDeletingDtors(
+            CGM.getContext().getLangOpts()))
       CGM.requireVectorDestructorDefinition(Ctor->getParent());
     return;
   }
@@ -2096,7 +2097,9 @@ void CodeGenFunction::EmitCXXDeleteExpr(const CXXDeleteExpr *E) {
   DeleteTy = getContext().getBaseElementType(DeleteTy);
   Ptr = Ptr.withElementType(ConvertTypeForMem(DeleteTy));
 
-  if (E->isArrayForm() && CGM.getCXXABI().hasVectorDeletingDtors()) {
+  if (E->isArrayForm() &&
+      CGM.getContext().getTargetInfo().emitVectorDeletingDtors(
+          CGM.getContext().getLangOpts())) {
     if (auto *RD = DeleteTy->getAsCXXRecordDecl()) {
       auto *Dtor = RD->getDestructor();
       if (Dtor && Dtor->isVirtual()) {

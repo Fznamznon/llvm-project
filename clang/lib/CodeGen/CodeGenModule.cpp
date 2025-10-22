@@ -8221,6 +8221,8 @@ void CodeGenModule::moveLazyEmissionStates(CodeGenModule *NewBuilder) {
 }
 
 bool CodeGenModule::classNeedsVectorDestructor(const CXXRecordDecl *RD) {
+  if (!Context.getTargetInfo().emitVectorDeletingDtors(Context.getLangOpts()))
+    return false;
   CXXDestructorDecl *Dtor = RD->getDestructor();
   // The compiler can't know if new[]/delete[] will be used outside of the DLL,
   // so just force vector deleting destructor emission if dllexport is present.
@@ -8229,12 +8231,12 @@ bool CodeGenModule::classNeedsVectorDestructor(const CXXRecordDecl *RD) {
       Dtor->hasAttr<DLLExportAttr>())
     return true;
 
-  assert(getCXXABI().hasVectorDeletingDtors());
   return RequireVectorDeletingDtor.count(RD);
 }
 
 void CodeGenModule::requireVectorDestructorDefinition(const CXXRecordDecl *RD) {
-  assert(getCXXABI().hasVectorDeletingDtors());
+  if (!Context.getTargetInfo().emitVectorDeletingDtors(Context.getLangOpts()))
+    return;
   RequireVectorDeletingDtor.insert(RD);
 
   // To reduce code size in general case we lazily emit scalar deleting

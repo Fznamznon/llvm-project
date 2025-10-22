@@ -11196,12 +11196,11 @@ bool Sema::CheckDestructor(CXXDestructorDecl *Destructor) {
         Destructor->setOperatorGlobalDelete(GlobalOperatorDelete);
       }
 
-      if (Context.getTargetInfo().getCXXABI().isMicrosoft()) {
-        // Lookup delete[] too in case we have to emit a vector deleting dtor;
+      if (Context.getTargetInfo().emitVectorDeletingDtors(
+              Context.getLangOpts())) {
+        // Lookup delete[] too in case we have to emit a vector deleting dtor.
         DeclarationName VDeleteName =
             Context.DeclarationNames.getCXXOperatorName(OO_Array_Delete);
-        // If the class has operator delete[], valid or not, we need to check
-        // the 4th bit of the implicit parameter, so track that.
         FunctionDecl *ArrOperatorDelete = FindDeallocationFunctionForDestructor(
             Loc, RD, /*Diagnose*/ false,
             /*LookForGlobal*/ false, VDeleteName);
@@ -11217,11 +11216,9 @@ bool Sema::CheckDestructor(CXXDestructorDecl *Destructor) {
                                                     /*LookForGlobal*/ true,
                                                     VDeleteName);
         }
-        assert(ArrOperatorDelete);
+        assert(ArrOperatorDelete &&
+               "Should've found at least global array delete");
         Destructor->setOperatorArrayDelete(ArrOperatorDelete);
-
-        // assert((GlobalArrOperatorDelete || ArrOperatorDelete) &&
-        //        "Not even global array delete?");
       }
     }
   }

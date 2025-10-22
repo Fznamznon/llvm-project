@@ -275,7 +275,6 @@ public:
   virtual CatchTypeInfo getCatchAllTypeInfo();
 
   virtual bool shouldTypeidBeNullChecked(QualType SrcRecordTy) = 0;
-  virtual bool hasVectorDeletingDtors() = 0;
   virtual void EmitBadTypeidCall(CodeGenFunction &CGF) = 0;
   virtual llvm::Value *EmitTypeid(CodeGenFunction &CGF, QualType SrcRecordTy,
                                   Address ThisPtr,
