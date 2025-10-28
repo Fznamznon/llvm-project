@@ -2106,26 +2106,26 @@ void CodeGenFunction::EmitCXXDeleteExpr(const CXXDeleteExpr *E) {
         llvm::Value *NumElements = nullptr;
         llvm::Value *AllocatedPtr = nullptr;
         CharUnits CookieSize;
-        llvm::BasicBlock *bodyBB = createBasicBlock("vdtor.call");
-        llvm::BasicBlock *doneBB = createBasicBlock("vdtor.nocall");
-        // Check array cookie to see if the array has 0 length. Don't call
+        llvm::BasicBlock *BodyBB = createBasicBlock("vdtor.call");
+        llvm::BasicBlock *DoneBB = createBasicBlock("vdtor.nocall");
+        // Check array cookie to see if the array has length 0. Don't call
         // the destructor in that case.
         CGM.getCXXABI().ReadArrayCookie(*this, Ptr, E, DeleteTy, NumElements,
                                         AllocatedPtr, CookieSize);
 
         auto *CondTy = cast<llvm::IntegerType>(NumElements->getType());
-        llvm::Value *isEmpty = Builder.CreateICmpEQ(
+        llvm::Value *IsEmpty = Builder.CreateICmpEQ(
             NumElements, llvm::ConstantInt::get(CondTy, 0));
-        Builder.CreateCondBr(isEmpty, doneBB, bodyBB);
+        Builder.CreateCondBr(IsEmpty, DoneBB, BodyBB);
 
         // Delete cookie for empty array.
-        const FunctionDecl *operatorDelete = E->getOperatorDelete();
-        EmitBlock(doneBB);
-        EmitDeleteCall(operatorDelete, AllocatedPtr, DeleteTy, NumElements,
+        const FunctionDecl *OperatorDelete = E->getOperatorDelete();
+        EmitBlock(DoneBB);
+        EmitDeleteCall(OperatorDelete, AllocatedPtr, DeleteTy, NumElements,
                        CookieSize);
         EmitBranch(DeleteEnd);
 
-        EmitBlock(bodyBB);
+        EmitBlock(BodyBB);
         if (!EmitObjectDelete(*this, E, Ptr, DeleteTy, DeleteEnd))
           EmitBlock(DeleteEnd);
         return;
