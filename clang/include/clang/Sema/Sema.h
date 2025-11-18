@@ -13557,9 +13557,7 @@ public:
       S.pushCodeSynthesisContext(Ctx);
     }
 
-    ~ScopedCodeSynthesisContext() {
-      S.popCodeSynthesisContext();
-    }
+    ~ScopedCodeSynthesisContext() { S.popCodeSynthesisContext(); }
   };
 
   /// List of active code synthesis contexts.
