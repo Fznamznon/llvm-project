@@ -1326,11 +1326,6 @@ namespace {
     // Whether an incomplete substituion should be treated as an error.
     bool BailOutOnIncomplete;
 
-    // Whether to rebuild pack expansion types; We don't do that when
-    // rebuilding the parameter mapping of a fold expression appearing
-    // in a constraint expression.
-    bool BuildPackExpansionTypes = true;
-
     // CWG2770: Function parameters should be instantiated when they are
     // needed by a satisfaction check of an atomic constraint or
     // (recursively) by another function parameter.
@@ -1358,11 +1353,9 @@ namespace {
 
     TemplateInstantiator(ForParameterMappingSubstitution_t, Sema &SemaRef,
                          SourceLocation Loc,
-                         const MultiLevelTemplateArgumentList &TemplateArgs,
-                         bool BuildPackExpansionTypes)
+                         const MultiLevelTemplateArgumentList &TemplateArgs)
         : inherited(SemaRef), TemplateArgs(TemplateArgs), Loc(Loc),
-          BailOutOnIncomplete(false),
-          BuildPackExpansionTypes(BuildPackExpansionTypes) {}
+          BailOutOnIncomplete(false) {}
 
     /// Determine whether the given type \p T has already been
     /// transformed.
@@ -1644,24 +1637,6 @@ namespace {
         break;
       }
       return inherited::TransformTemplateArgument(Input, Output, Uneval);
-    }
-
-    // This has to be here to allow its overload.
-    ExprResult RebuildPackExpansion(Expr *Pattern, SourceLocation EllipsisLoc,
-                                    UnsignedOrNone NumExpansions) {
-      return inherited::RebuildPackExpansion(Pattern, EllipsisLoc,
-                                             NumExpansions);
-    }
-
-    TemplateArgumentLoc RebuildPackExpansion(TemplateArgumentLoc Pattern,
-                                             SourceLocation EllipsisLoc,
-                                             UnsignedOrNone NumExpansions) {
-      // We don't rewrite a PackExpansion type when we want to normalize a
-      // CXXFoldExpr constraint. We'll expand it when evaluating the constraint.
-      if (BuildPackExpansionTypes)
-        return inherited::RebuildPackExpansion(Pattern, EllipsisLoc,
-                                               NumExpansions);
-      return Pattern;
     }
 
     using TreeTransform::TransformTemplateSpecializationType;
@@ -2242,19 +2217,28 @@ TemplateInstantiator::TransformLoopHintAttr(const LoopHintAttr *LH) {
 
   // Generate error if there is a problem with the value.
   if (getSema().CheckLoopHintExpr(TransformedExpr, LH->getLocation(),
-                                  LH->getSemanticSpelling() ==
+                                  /*AllowZero=*/LH->getSemanticSpelling() ==
                                       LoopHintAttr::Pragma_unroll))
     return LH;
 
   LoopHintAttr::OptionType Option = LH->getOption();
   LoopHintAttr::LoopHintState State = LH->getState();
 
-  llvm::APSInt ValueAPS =
-      TransformedExpr->EvaluateKnownConstInt(getSema().getASTContext());
-  // The values of 0 and 1 block any unrolling of the loop.
-  if (ValueAPS.isZero() || ValueAPS.isOne()) {
-    Option = LoopHintAttr::Unroll;
-    State = LoopHintAttr::Disable;
+  // Since C++ does not have partial instantiation, we would expect a
+  // transformed loop hint expression to not be value dependent.  However, at
+  // the time of writing, the use of a generic lambda inside a template
+  // triggers a double instantiation, so we must protect against this event.
+  // This provision may become unneeded in the future.
+  if (Option == LoopHintAttr::UnrollCount &&
+      !TransformedExpr->isValueDependent()) {
+    llvm::APSInt ValueAPS =
+        TransformedExpr->EvaluateKnownConstInt(getSema().getASTContext());
+    // The values of 0 and 1 block any unrolling of the loop (also see
+    // handleLoopHintAttr in SemaStmtAttr).
+    if (ValueAPS.isZero() || ValueAPS.isOne()) {
+      Option = LoopHintAttr::Unroll;
+      State = LoopHintAttr::Disable;
+    }
   }
 
   // Create new LoopHintValueAttr with integral expression in place of the
@@ -2491,7 +2475,14 @@ TemplateInstantiator::TransformTemplateTypeParmType(TypeLocBuilder &TLB,
     auto [AssociatedDecl, Final] =
         TemplateArgs.getAssociatedDecl(T->getDepth());
     UnsignedOrNone PackIndex = std::nullopt;
-    if (T->isParameterPack()) {
+    if (T->isParameterPack() ||
+        // In concept parameter mapping for fold expressions, packs that aren't
+        // expanded in place are treated as having non-pack dependency, so that
+        // a PackExpansionType won't prevent expanding the packs outside the
+        // TreeTransform. However, we still need to unpack the arguments during
+        // any template argument substitution, so we check the associated
+        // declaration instead.
+        (T->getDecl() && T->getDecl()->isTemplateParameterPack())) {
       assert(Arg.getKind() == TemplateArgument::Pack &&
              "Missing argument pack");
 
@@ -4385,10 +4376,10 @@ bool Sema::SubstTemplateArguments(
 bool Sema::SubstTemplateArgumentsInParameterMapping(
     ArrayRef<TemplateArgumentLoc> Args, SourceLocation BaseLoc,
     const MultiLevelTemplateArgumentList &TemplateArgs,
-    TemplateArgumentListInfo &Out, bool BuildPackExpansionTypes) {
+    TemplateArgumentListInfo &Out) {
   TemplateInstantiator Instantiator(
       TemplateInstantiator::ForParameterMappingSubstitution, *this, BaseLoc,
-      TemplateArgs, BuildPackExpansionTypes);
+      TemplateArgs);
   return Instantiator.TransformTemplateArguments(Args.begin(), Args.end(), Out);
 }
 
