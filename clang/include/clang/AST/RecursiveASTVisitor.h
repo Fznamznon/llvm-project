@@ -3030,6 +3030,7 @@ DEF_TRAVERSE_STMT(UnresolvedSYCLKernelCallStmt, {
   if (getDerived().shouldVisitImplicitCode()) {
     TRY_TO(TraverseStmt(S->getOriginalStmt()));
     TRY_TO(TraverseStmt(S->getKernelLaunchIdExpr()));
+    TRY_TO(TraverseStmt(S->getSpecArgsIdExpr()));
     ShouldVisitChildren = false;
   }
 })
