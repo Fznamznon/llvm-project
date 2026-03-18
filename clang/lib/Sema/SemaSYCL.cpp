@@ -1045,35 +1045,37 @@ StmtResult BuildSYCLKernelLaunchCallStmt(
         return StmtError();
       Expr *BaseForSubsCall =
           SemaRef.MaybeCreateExprWithCleanups(LaunchResult).get();
-      llvm::SmallVector<Expr *, 12> SpecialArgs;
-      // FIXME: diagnose that first param is kernel object, i.e. is callable
-      // object.
-      createArgumentsForSpecialTypes(SpecialArgs, FD->getParamDecl(0), Loc,
-                                     SemaRef);
-      ExprResult Result = SemaRef.BuildCallExpr(
-          SemaRef.getCurScope(), BaseForSubsCall, Loc, SpecialArgs, Loc);
-      if (Result.isInvalid())
-        return StmtError();
+      if (!BaseForSubsCall->getType()->isVoidType()) {
+        // FIXME: diagnose that sycl_kernel_launch call returned a callable
+        // object. Default diagnostic here is very uncldear
+        llvm::SmallVector<Expr *, 12> SpecialArgs;
+        for (auto Param : FD->parameters()) {
+          if (Param->getType()->isRecordType())
+            createArgumentsForSpecialTypes(SpecialArgs, Param, Loc, SemaRef);
+        }
+        ExprResult Result = SemaRef.BuildCallExpr(
+            SemaRef.getCurScope(), BaseForSubsCall, Loc, SpecialArgs, Loc);
+        if (Result.isInvalid())
+          return StmtError();
 
-      // Now gather types for device code generation. Callable object returned by
-      // sycl_kernel_launch call returns type_list object whose template arguments
-      // describe types of additional kernel arguments required for special
-      // objects, i.e. SYCL accessors/samplers/streams etc.
-      QualType Ty = Result.get()->getType();
-      // FIXME: that also needs to be diagnosed somewhere.
-      assert(Ty->getAs<TemplateSpecializationType>());
-      auto TST = Ty->getAs<TemplateSpecializationType>();
-      for (auto Arg : TST->template_arguments()) {
-        // Arg.getAsType()
-        //     ->getAs<SubstTemplateTypeParmType>()
-        //     ->getReplacementType()
-        //     ->dump();
-        SpecialArgTys.push_back(Arg.getAsType()
-                                    ->getAs<SubstTemplateTypeParmType>()
-                                    ->getReplacementType());
+        // Now gather types for device code generation. Callable object returned
+        // by sycl_kernel_launch call returns type_list object whose template
+        // arguments describe types of additional kernel arguments required for
+        // special objects, i.e. SYCL accessors/samplers/streams etc.
+        QualType Ty = Result.get()->getType();
+        // FIXME: that also needs to be diagnosed somewhere.
+        assert(Ty->getAs<TemplateSpecializationType>());
+        auto TST = Ty->getAs<TemplateSpecializationType>();
+        for (auto Arg : TST->template_arguments()) {
+          SpecialArgTys.push_back(Arg.getAsType()
+                                      ->getAs<SubstTemplateTypeParmType>()
+                                      ->getReplacementType());
+        }
+
+        Stmts.push_back(SemaRef.MaybeCreateExprWithCleanups(Result).get());
+      } else {
+        Stmts.push_back(BaseForSubsCall);
       }
-
-      Stmts.push_back(SemaRef.MaybeCreateExprWithCleanups(Result).get());
     }
   }
 
@@ -1136,7 +1138,7 @@ private:
   FunctionDecl *FD;
 };
 
-OutlinedFunctionDecl *
+DeclResult
 BuildSYCLKernelEntryPointOutline(Sema &SemaRef, FunctionDecl *FD,
                                  CompoundStmt *Body,
                                  SmallVectorImpl<QualType> &SpecialArgTys,
@@ -1144,10 +1146,14 @@ BuildSYCLKernelEntryPointOutline(Sema &SemaRef, FunctionDecl *FD,
   // FIXME do we need a CodeSynthesisContext here?
   using ParmDeclMap = OutlinedFunctionDeclBodyInstantiator::ParmDeclMap;
   ParmDeclMap ParmMap;
-  SmallVector<Stmt *> Stmts;
 
   OutlinedFunctionDecl *OFD = OutlinedFunctionDecl::Create(
-      SemaRef.getASTContext(), FD, FD->getNumParams());
+      SemaRef.getASTContext(), FD, FD->getNumParams() + SpecialArgTys.size());
+
+  // CurContext is skep-attributed function but we're actually building device
+  // version of it which is a different DeclContext, so push it on the stack.
+ 
+  Sema::ContextRAII SavedContext(SemaRef, OFD);
   unsigned i = 0;
   for (ParmVarDecl *PVD : FD->parameters()) {
     ImplicitParamDecl *IPD = ImplicitParamDecl::Create(
@@ -1157,57 +1163,79 @@ BuildSYCLKernelEntryPointOutline(Sema &SemaRef, FunctionDecl *FD,
     ParmMap[PVD] = IPD;
     ++i;
   }
+  OutlinedFunctionDeclBodyInstantiator OFDBodyInstantiator(SemaRef, ParmMap,
+                                                           FD);
+  Stmt *TransformedBody = OFDBodyInstantiator.TransformStmt(Body).get();
 
   // Create kernel parameters for special types and create arguments to
   // sycl_handle_special_kernel_parameters call.
-  SmallVector<Expr*, 8> Args;
-  for (auto QT : SpecialArgTys) {
-    // TODO: Why these are implicit?
-    ImplicitParamDecl *IPD = ImplicitParamDecl::Create(
-        SemaRef.getASTContext(), OFD, SourceLocation(),
-        &SemaRef.getASTContext().Idents.get("idk"), QT,
-        ImplicitParamKind::Other);
-    OFD->setParam(i, IPD);
-    ++i;
-    ExprResult Arg =
-        SemaRef.BuildDeclRefExpr(IPD, QT, VK_LValue, SourceLocation());
-    assert(!Arg.isInvalid() && "synthesized code generation failed?");
-    Args.push_back(Arg.get());
-  }
-
-  {
+  // This is synthesizing the following pseudo-code:
+  // void kernel-entry-point(lambda-from-f kernelFunc, buffer_t* X, int Y) {
+  //   sycl_handle_special_kernel_parameters<kernel-name-type>(kernelFunc.sout)(X, Y);
+  //   {
+  //     // This is copied body of the orignal skep-attributed function.
+  //     kernelFunc();
+  //   }
+  // }
+  // where sout is has type marked with sycl_special_kernel_parameter attribute.
+  Stmt *OFDBody;
+  if (IdExpr && !SpecialArgTys.empty()) {
     // Sema::CodeSynthesisContext CSC;
-    // CSC.Kind = Sema::CodeSynthesisContext::SYCLKernelLaunchOverloadResolution;
+    // CSC.Kind =
+    // Sema::CodeSynthesisContext::SYCLKernelLaunchOverloadResolution;
     // CSC.Entity = FD;
     // CSC.CallArgs = Args.data();
     // CSC.NumCallArgs = Args.size();
     // Sema::ScopedCodeSynthesisContext ScopedCSC(SemaRef, CSC);
+    SmallVector<Expr *, 8> HandleArgs;
+    for (auto QT : SpecialArgTys) {
+      // TODO: Why these are implicit?
+      ImplicitParamDecl *IPD = ImplicitParamDecl::Create(
+          SemaRef.getASTContext(), OFD, SourceLocation(),
+          &SemaRef.getASTContext().Idents.get("idk"), QT,
+          ImplicitParamKind::Other);
+      OFD->setParam(i, IPD);
+      ++i;
+      ExprResult Arg =
+          SemaRef.BuildDeclRefExpr(IPD, QT, VK_LValue, SourceLocation());
+      assert(!Arg.isInvalid() && "synthesized code generation failed?");
+      HandleArgs.push_back(Arg.get());
+    }
 
-    ExprResult LaunchResult =
-        SemaRef.BuildCallExpr(SemaRef.getCurScope(), IdExpr, Loc, Args, Loc);
-    if (LaunchResult.isInvalid())
-      return nullptr;
-    Expr *BaseForSubsCall =
-        SemaRef.MaybeCreateExprWithCleanups(LaunchResult).get();
+    // This generates sycl_handle_special_kernel_parameters<kernel-name-type>(kernelFunc.sout)
+    ExprResult FirstHandleCallResult = SemaRef.BuildCallExpr(
+        SemaRef.getCurScope(), IdExpr, Loc, HandleArgs, Loc);
+    if (FirstHandleCallResult.isInvalid())
+      return true;
+    // FIXME: diagnose that sycl_special_kernel_parameter call returned a
+    // callable object. Default diagnostic here is very uncldear
+
+    // SpecialArgs are additional arguments that are needed to initialize an 
+    // object of a special type. They are passed to a subsequent call to the
+    // callable object returned by sycl_handle_special_kernel_parameters call.
     llvm::SmallVector<Expr *, 12> SpecialArgs;
-    // FIXME: diagnose that first param is kernel object, i.e. is callable
-    // object.
-    createArgumentsForSpecialTypes(SpecialArgs, OFD->getParam(0), Loc,
-                                   SemaRef);
+    for (auto Param : OFD->parameters()) {
+      if (Param->getType()->isRecordType())
+        createArgumentsForSpecialTypes(SpecialArgs, Param, Loc, SemaRef);
+    }
+    Expr *BaseForSubsCall =
+        SemaRef.MaybeCreateExprWithCleanups(FirstHandleCallResult).get();
     ExprResult Result = SemaRef.BuildCallExpr(
         SemaRef.getCurScope(), BaseForSubsCall, Loc, SpecialArgs, Loc);
     if (Result.isInvalid())
-      return nullptr;
+      return true;
 
+    SmallVector<Stmt *> Stmts;
+    // Make sure to push kernel argument processing result firts, before the
+    // transformed body of skep-attributed function.
     Stmts.push_back(SemaRef.MaybeCreateExprWithCleanups(Result).get());
+    Stmts.push_back(TransformedBody);
+    OFDBody = CompoundStmt::Create(SemaRef.getASTContext(), Stmts,
+                                   FPOptionsOverride(), Loc, Loc);
+  } else {
+    OFDBody = TransformedBody;
   }
 
-  OutlinedFunctionDeclBodyInstantiator OFDBodyInstantiator(SemaRef, ParmMap,
-                                                           FD);
-  Stmt *TransformedBody = OFDBodyInstantiator.TransformStmt(Body).get();
-  Stmts.push_back(TransformedBody);
-  Stmt *OFDBody = CompoundStmt::Create(SemaRef.getASTContext(), Stmts,
-                                       FPOptionsOverride(), Loc, Loc);
   OFD->setBody(OFDBody);
   OFD->setNothrow();
   return OFD;
@@ -1247,16 +1275,18 @@ StmtResult SemaSYCL::BuildSYCLKernelCallStmt(FunctionDecl *FD,
   StmtResult LaunchResult = BuildSYCLKernelLaunchCallStmt(
       SemaRef, FD, &SKI, LaunchIdExpr, Loc, SpecialArgTys);
 
-  // Build the outline of the synthesized device entry point function.
-  OutlinedFunctionDecl *OFD = BuildSYCLKernelEntryPointOutline(
-      SemaRef, FD, Body, SpecialArgTys, HandleSpecParamsExpr, Loc);
-  assert(OFD);
-
   if (LaunchResult.isInvalid())
     return StmtError();
 
-  Stmt *NewBody =
-      new (getASTContext()) SYCLKernelCallStmt(Body, LaunchResult.get(), OFD);
+  // Build the outline of the synthesized device entry point function.
+  DeclResult OFD = BuildSYCLKernelEntryPointOutline(
+      SemaRef, FD, Body, SpecialArgTys, HandleSpecParamsExpr, Loc);
+
+  if (OFD.isInvalid())
+    return StmtError();
+
+  Stmt *NewBody = new (getASTContext()) SYCLKernelCallStmt(
+      Body, LaunchResult.get(), cast<OutlinedFunctionDecl>(OFD.get()));
 
   return NewBody;
 }

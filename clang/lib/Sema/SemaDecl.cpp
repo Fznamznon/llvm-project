@@ -16398,10 +16398,13 @@ Decl *Sema::ActOnStartOfFunctionDef(Scope *FnBodyScope, Decl *D,
       // 'LaunchIDExpr' failed, then 'SYCLKernelLaunchIdExpr' will be assigned
       // a null pointer value below; that is expected.
       getCurFunction()->SYCLKernelLaunchIdExpr = LaunchIdExpr.get();
-      ExprResult HSPSPIdExpr = SYCL().BuildSYCLKernelLaunchIdExpr(
-          FD, SKEPAttr->getKernelName(),
-          "sycl_handle_special_kernel_parameters");
-      getCurFunction()->HandleSYCLSpecialParamsIdExpr = HSPSPIdExpr.get();
+      if (!LaunchIdExpr.isInvalid() &&
+          !LaunchIdExpr.get()->getType()->isVoidType()) {
+        ExprResult HSPSPIdExpr = SYCL().BuildSYCLKernelLaunchIdExpr(
+            FD, SKEPAttr->getKernelName(),
+            "sycl_handle_special_kernel_parameters");
+        getCurFunction()->HandleSYCLSpecialParamsIdExpr = HSPSPIdExpr.get();
+      }
     }
   }
 
