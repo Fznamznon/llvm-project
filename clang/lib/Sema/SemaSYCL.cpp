@@ -960,6 +960,9 @@ static void createArgumentsForSpecialTypes(SmallVectorImpl<Expr *> &Args,
     KernelObjVisitor Visitor{SemaRef.SYCL()};
     Visitor.VisitRecordBases(KernelObjRecord, FieldChecker);
     Visitor.VisitRecordFields(KernelObjRecord, FieldChecker);
+    // for (auto a : Args) {
+    //   a->dump();
+    // }
   }
 }
 
@@ -1064,12 +1067,11 @@ StmtResult BuildSYCLKernelLaunchCallStmt(
         // special objects, i.e. SYCL accessors/samplers/streams etc.
         QualType Ty = Result.get()->getType();
         // FIXME: that also needs to be diagnosed somewhere.
-        assert(Ty->getAs<TemplateSpecializationType>());
-        auto TST = Ty->getAs<TemplateSpecializationType>();
+        auto *TST = Ty->getAs<TemplateSpecializationType>();
+        if (!TST)
+          return StmtError();
         for (auto Arg : TST->template_arguments()) {
-          SpecialArgTys.push_back(Arg.getAsType()
-                                      ->getAs<SubstTemplateTypeParmType>()
-                                      ->getReplacementType());
+          SpecialArgTys.push_back(Arg.getAsType().getCanonicalType());
         }
 
         Stmts.push_back(SemaRef.MaybeCreateExprWithCleanups(Result).get());
@@ -1152,8 +1154,8 @@ BuildSYCLKernelEntryPointOutline(Sema &SemaRef, FunctionDecl *FD,
 
   // CurContext is skep-attributed function but we're actually building device
   // version of it which is a different DeclContext, so push it on the stack.
- 
   Sema::ContextRAII SavedContext(SemaRef, OFD);
+
   unsigned i = 0;
   for (ParmVarDecl *PVD : FD->parameters()) {
     ImplicitParamDecl *IPD = ImplicitParamDecl::Create(
@@ -1180,6 +1182,13 @@ BuildSYCLKernelEntryPointOutline(Sema &SemaRef, FunctionDecl *FD,
   // where sout is has type marked with sycl_special_kernel_parameter attribute.
   Stmt *OFDBody;
   if (IdExpr && !SpecialArgTys.empty()) {
+    SmallVector<Expr *, 8> HandleArgs;
+    for (unsigned I = 0; I < FD->getNumParams(); ++I) {
+      auto Param = OFD->getParam(I);
+      if (Param->getType()->isRecordType())
+        createArgumentsForSpecialTypes(HandleArgs, Param, Loc, SemaRef);
+    }
+
     // Sema::CodeSynthesisContext CSC;
     // CSC.Kind =
     // Sema::CodeSynthesisContext::SYCLKernelLaunchOverloadResolution;
@@ -1187,9 +1196,14 @@ BuildSYCLKernelEntryPointOutline(Sema &SemaRef, FunctionDecl *FD,
     // CSC.CallArgs = Args.data();
     // CSC.NumCallArgs = Args.size();
     // Sema::ScopedCodeSynthesisContext ScopedCSC(SemaRef, CSC);
-    SmallVector<Expr *, 8> HandleArgs;
+
+    // Handle args for sycl_handle_special_kernel_parameters call, these are
+    // coming from subobjects with sycl_special_kernel_parameter attribute
+    // within skep-attributed function arguments, SpecialArgs are additional kernel
+    // arguments that are needed to initialize special subobjects and they go
+    // to the subsequent call.
+    SmallVector<Expr *, 12> SpecialArgs;
     for (auto QT : SpecialArgTys) {
-      // TODO: Why these are implicit?
       ImplicitParamDecl *IPD = ImplicitParamDecl::Create(
           SemaRef.getASTContext(), OFD, SourceLocation(),
           &SemaRef.getASTContext().Idents.get("idk"), QT,
@@ -1199,7 +1213,7 @@ BuildSYCLKernelEntryPointOutline(Sema &SemaRef, FunctionDecl *FD,
       ExprResult Arg =
           SemaRef.BuildDeclRefExpr(IPD, QT, VK_LValue, SourceLocation());
       assert(!Arg.isInvalid() && "synthesized code generation failed?");
-      HandleArgs.push_back(Arg.get());
+      SpecialArgs.push_back(Arg.get());
     }
 
     // This generates sycl_handle_special_kernel_parameters<kernel-name-type>(kernelFunc.sout)
@@ -1210,14 +1224,6 @@ BuildSYCLKernelEntryPointOutline(Sema &SemaRef, FunctionDecl *FD,
     // FIXME: diagnose that sycl_special_kernel_parameter call returned a
     // callable object. Default diagnostic here is very uncldear
 
-    // SpecialArgs are additional arguments that are needed to initialize an 
-    // object of a special type. They are passed to a subsequent call to the
-    // callable object returned by sycl_handle_special_kernel_parameters call.
-    llvm::SmallVector<Expr *, 12> SpecialArgs;
-    for (auto Param : OFD->parameters()) {
-      if (Param->getType()->isRecordType())
-        createArgumentsForSpecialTypes(SpecialArgs, Param, Loc, SemaRef);
-    }
     Expr *BaseForSubsCall =
         SemaRef.MaybeCreateExprWithCleanups(FirstHandleCallResult).get();
     ExprResult Result = SemaRef.BuildCallExpr(
