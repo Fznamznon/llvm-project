@@ -599,6 +599,12 @@ namespace llvm {
                                  const SelectionDAG &DAG,
                                  const MachineMemOperand &MMO) const override;
 
+    bool isProfitableToCombineMinNumMaxNum(EVT VT) const override {
+      // X86 has instructions that correspond to cmp + select, so forming
+      // minnum/maxnum is not profitable.
+      return false;
+    }
+
     Register getRegisterByName(const char* RegName, LLT VT,
                                const MachineFunction &MF) const override;
 
@@ -876,6 +882,7 @@ namespace llvm {
 
     TargetLoweringBase::AtomicExpansionKind
     shouldExpandAtomicLoadInIR(LoadInst *LI) const override;
+
     TargetLoweringBase::AtomicExpansionKind
     shouldExpandAtomicStoreInIR(StoreInst *SI) const override;
     TargetLoweringBase::AtomicExpansionKind
@@ -887,6 +894,10 @@ namespace llvm {
 
     LoadInst *
     lowerIdempotentRMWIntoFencedLoad(AtomicRMWInst *AI) const override;
+
+    bool shouldIssueAtomicLoadForAtomicEmulationLoop() const override {
+      return false;
+    }
 
     bool needsCmpXchgNb(Type *MemType) const;
 
