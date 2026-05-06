@@ -4943,9 +4943,6 @@ public:
   }
   parameter_const_iterator param_begin() const { return getParams(); }
   parameter_const_iterator param_end() const { return getParams() + NumParams; }
-  ArrayRef<ImplicitParamDecl*> parameters() {
-    return {getParams(), NumParams};
-  }
 
   // Implement isa/cast/dyncast/etc.
   static bool classof(const Decl *D) { return classofKind(D->getKind()); }

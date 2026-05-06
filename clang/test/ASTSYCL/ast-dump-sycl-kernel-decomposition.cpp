@@ -1,10 +1,10 @@
 // Tests without serialization:
-// RUN: %clang_cc1 -std=c++17 -triple x86_64-unknown-unknown -fsycl-is-device \
+// RUN: %clang_cc1 -std=c++17 -triple spirv64-unknown-unknown -fsycl-is-device \
 // RUN:   -ast-dump %s \
-// RUN:   | FileCheck --match-full-lines %s
+// RUN:   | FileCheck %s
 // RUN: %clang_cc1 -std=c++17 -triple x86_64-unknown-unknown -fsycl-is-host \
 // RUN:   -ast-dump %s \
-// RUN:   | FileCheck --match-full-lines %s
+// RUN:   | FileCheck %s
 
 // Thes test validates the AST body produced for functions declared with the
 // sycl_kernel_entry_point attribute in case an argument of such function
@@ -55,16 +55,24 @@ template <typename KN, typename KT>
 [[clang::sycl_kernel_entry_point(KN)]] void k(KT Kernel) {
   Kernel();
 }
-// CHECK:      |-FunctionTemplateDecl {{.*}} k
+// CHECK:      |-FunctionTemplateDecl {{.*}} k{{.*}}
 // CHECK-NEXT: | |-TemplateTypeParmDecl {{.*}} referenced typename depth 0 index 0 KN
 // CHECK-NEXT: | |-TemplateTypeParmDecl {{.*}} referenced typename depth 0 index 1 KT
 // CHECK-NEXT: | |-FunctionDecl {{.*}} k 'void (KT)'
 // CHECK-NEXT: | | |-ParmVarDecl {{.*}} referenced Kernel 'KT'
 // CHECK-NEXT: | | |-UnresolvedSYCLKernelCallStmt {{.*}}
-// CHECK-NEXT: | | | `-CompoundStmt {{.*}}
-// CHECK-NEXT: | | |   `-CallExpr {{.*}} '<dependent type>'
-// CHECK-NEXT: | | |     `-DeclRefExpr {{.*}} 'KT' lvalue ParmVar {{.*}} 'Kernel' 'KT'
-// CHECK-NEXT: | | `-SYCLKernelEntryPointAttr {{.*}} KN
+// CHECK-NEXT: | | | |-CompoundStmt {{.*}}
+// CHECK-NEXT: | | | | `-CallExpr {{.*}} '<dependent type>'
+// CHECK-NEXT: | | | |  `-DeclRefExpr {{.*}} 'KT' lvalue ParmVar {{.*}} 'Kernel' 'KT'
+// CHECK-NEXT: | | | |-UnresolvedLookupExpr {{.*}} '<dependent type>' lvalue (ADL) = 'sycl_kernel_launch' {{.*}}
+// CHECK-NEXT: | | | | `-TemplateArgument type 'KN':'type-parameter-0-0'
+// CHECK-NEXT: | | | |   `-TemplateTypeParmType {{.*}} 'KN' dependent depth 0 index 0
+// CHECK-NEXT: | | | |     `-TemplateTypeParm {{.*}} 'KN'
+// CHECK-NEXT: | | | `-UnresolvedLookupExpr {{.*}} '<dependent type>' lvalue (ADL) = 'sycl_handle_special_kernel_parameters' {{.*}}
+// CHECK-NEXT: | | |   `-TemplateArgument type 'KN':'type-parameter-0-0'
+// CHECK-NEXT: | | |     `-TemplateTypeParmType {{.*}} 'KN' dependent depth 0 index 0
+// CHECK-NEXT: | | |       `-TemplateTypeParm {{.*}} 'KN'
+// CHECK-NEXT: | |  `-SYCLKernelEntryPointAttr {{.*}} KN
 // CHECK-NEXT: | `-FunctionDecl {{.*}} used k {{.*}} implicit_instantiation instantiated_from {{.*}}
 // CHECK-NEXT: |   |-TemplateArgument type 'KN<0>'
 // CHECK-NEXT: |   | `-RecordType {{.*}} 'KN<0>' canonical
