@@ -122,6 +122,9 @@ private:
   void setOriginalStmt(CompoundStmt *CS) { OriginalStmt = CS; }
 
   void setKernelLaunchIdExpr(Expr *IdExpr) { KernelLaunchIdExpr = IdExpr; }
+  void setSpecArgsIdExpr(Expr *IdExpr) {
+    HandleSYCLSpecialParamsIdExpr = IdExpr;
+  }
 
 public:
   static UnresolvedSYCLKernelCallStmt *Create(const ASTContext &C,

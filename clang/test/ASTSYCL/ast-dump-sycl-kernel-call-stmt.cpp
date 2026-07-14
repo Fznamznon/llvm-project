@@ -72,7 +72,11 @@ void skep2<KN<2>>(K<2>);
 // CHECK-NEXT: | | | |-CompoundStmt {{.*}}
 // CHECK-NEXT: | | | | `-CallExpr {{.*}} '<dependent type>'
 // CHECK-NEXT: | | | |   `-DeclRefExpr {{.*}} 'KT' lvalue ParmVar {{.*}} 'k' 'KT'
-// CHECK-NEXT: | | | `-UnresolvedLookupExpr {{.*}} '<dependent type>' lvalue (ADL) = 'sycl_kernel_launch' {{.*}}
+// CHECK-NEXT: | | | |-UnresolvedLookupExpr {{.*}} '<dependent type>' lvalue (ADL) = 'sycl_kernel_launch' {{.*}}
+// CHECK-NEXT: | | | | `-TemplateArgument type 'KNT':'type-parameter-0-0'
+// CHECK-NEXT: | | | |   `-TemplateTypeParmType {{.*}} 'KNT' dependent depth 0 index 0
+// CHECK-NEXT: | | | |     `-TemplateTypeParm {{.*}} 'KNT'
+// CHECK-NEXT: | | | `-UnresolvedLookupExpr {{.*}} '<dependent type>' lvalue (ADL) = 'sycl_handle_special_kernel_parameters' {{.*}}
 // CHECK-NEXT: | | |   `-TemplateArgument type 'KNT':'type-parameter-0-0'
 // CHECK-NEXT: | | |     `-TemplateTypeParmType {{.*}} 'KNT' dependent depth 0 index 0
 // CHECK-NEXT: | | |       `-TemplateTypeParm {{.*}} 'KNT'
@@ -131,7 +135,11 @@ void skep3<KN<3>>(K<3> k) {
 // CHECK-NEXT: | | | |-CompoundStmt {{.*}}
 // CHECK-NEXT: | | | | `-CallExpr {{.*}} '<dependent type>'
 // CHECK-NEXT: | | | |   `-DeclRefExpr {{.*}} 'KT' lvalue ParmVar {{.*}} 'k' 'KT'
-// CHECK-NEXT: | | | `-UnresolvedLookupExpr {{.*}} '<dependent type>' lvalue (ADL) = 'sycl_kernel_launch' {{.*}}
+// CHECK-NEXT: | | | |-UnresolvedLookupExpr {{.*}} '<dependent type>' lvalue (ADL) = 'sycl_kernel_launch' {{.*}}
+// CHECK-NEXT: | | | | `-TemplateArgument type 'KNT':'type-parameter-0-0'
+// CHECK-NEXT: | | | |   `-TemplateTypeParmType {{.*}} 'KNT' dependent depth 0 index 0
+// CHECK-NEXT: | | | |     `-TemplateTypeParm {{.*}} 'KNT'
+// CHECK-NEXT: | | | `-UnresolvedLookupExpr {{.*}} '<dependent type>' lvalue (ADL) = 'sycl_handle_special_kernel_parameters' {{.*}}
 // CHECK-NEXT: | | |   `-TemplateArgument type 'KNT':'type-parameter-0-0'
 // CHECK-NEXT: | | |     `-TemplateTypeParmType {{.*}} 'KNT' dependent depth 0 index 0
 // CHECK-NEXT: | | |       `-TemplateTypeParm {{.*}} 'KNT'
@@ -417,7 +425,11 @@ void foo() {
 // CHECK-NEXT: | | | | |   |-DeclRefExpr {{.*}} 'KT' lvalue ParmVar {{.*}} 'k' 'KT'
 // CHECK-NEXT: | | | | |   |-DeclRefExpr {{.*}} 'int' lvalue ParmVar {{.*}} 'a' 'int'
 // CHECK-NEXT: | | | | |   `-DeclRefExpr {{.*}} 'int' lvalue ParmVar {{.*}} 'b' 'int'
-// CHECK-NEXT: | | | | `-UnresolvedMemberExpr {{.*}} '<bound member function type>' lvalue
+// CHECK-NEXT: | | | | |-UnresolvedMemberExpr {{.*}} '<bound member function type>' lvalue
+// CHECK-NEXT: | | | | `-UnresolvedLookupExpr {{.*}} '<dependent type>' lvalue (ADL) = 'sycl_handle_special_kernel_parameters' {{.*}}
+// CHECK-NEXT: | | | |   `-TemplateArgument type 'KNT':'type-parameter-0-0'
+// CHECK-NEXT: | | | |     `-TemplateTypeParmType {{.*}} 'KNT' dependent depth 0 index 0
+// CHECK-NEXT: | | | |       `-TemplateTypeParm {{.*}} 'KNT'
 // CHECK-NEXT: | | | `-SYCLKernelEntryPointAttr {{.*}} KNT
 // CHECK-NEXT: | | `-CXXMethodDecl {{.*}} used skep9 {{.*}} implicit_instantiation implicit-inline instantiated_from 0x{{.*}}
 // CHECK-NEXT: | |   |-TemplateArgument type 'KN<9>'

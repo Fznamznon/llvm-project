@@ -739,7 +739,7 @@ StmtResult BuildSYCLKernelLaunchCallStmt(
 class OutlinedFunctionDeclBodyInstantiator
     : public TreeTransform<OutlinedFunctionDeclBodyInstantiator> {
 public:
-  using ParmDeclMap = llvm::DenseMap<ParmVarDecl *, VarDecl *>;
+  using ParmDeclMap = llvm::DenseMap<VarDecl *, VarDecl *>;
 
   OutlinedFunctionDeclBodyInstantiator(Sema &S, ParmDeclMap &M,
                                        FunctionDecl *FD)
@@ -749,17 +749,17 @@ public:
   // A new set of AST nodes is always required.
   bool AlwaysRebuild() { return true; }
 
-  // Transform ParmVarDecl references to the supplied replacement variables.
+  // Transform VarDecl references to the supplied replacement variables.
   ExprResult TransformDeclRefExpr(DeclRefExpr *DRE) {
-    const ParmVarDecl *PVD = dyn_cast<ParmVarDecl>(DRE->getDecl());
-    if (PVD) {
-      ParmDeclMap::iterator I = MapRef.find(PVD);
+    const VarDecl *OrigVD = dyn_cast<VarDecl>(DRE->getDecl());
+    if (OrigVD) {
+      ParmDeclMap::iterator I = MapRef.find(OrigVD);
       if (I != MapRef.end()) {
         VarDecl *VD = I->second;
         assert(SemaRef.getASTContext().hasSameUnqualifiedType(
-            PVD->getType().getNonReferenceType(), VD->getType()));
+            OrigVD->getType().getNonReferenceType(), VD->getType()));
         assert(!VD->getType().isMoreQualifiedThan(
-            PVD->getType().getNonReferenceType(), SemaRef.getASTContext()));
+            OrigVD->getType().getNonReferenceType(), SemaRef.getASTContext()));
         VD->setIsUsed();
         return DeclRefExpr::Create(
             SemaRef.getASTContext(), DRE->getQualifierLoc(),
@@ -797,10 +797,9 @@ BuildSYCLKernelEntryPointOutline(Sema &SemaRef, FunctionDecl *FD,
   OutlinedFunctionDecl *OFD = OutlinedFunctionDecl::Create(
       SemaRef.getASTContext(), FD, FD->getNumParams() + SpecialArgTys.size());
 
-  // CurContext is skep-attributed function but we're actually building device
-  // version of it which is a different DeclContext, so push it on the stack.
-  Sema::ContextRAII SavedContext(SemaRef, OFD);
-
+  // We create everything in DeclContext of the original function (FD) and then
+  // replace all references to original function's parameters or variables
+  // using a TreeTransform.
   unsigned i = 0;
   for (ParmVarDecl *PVD : FD->parameters()) {
     ImplicitParamDecl *IPD = ImplicitParamDecl::Create(
@@ -810,28 +809,28 @@ BuildSYCLKernelEntryPointOutline(Sema &SemaRef, FunctionDecl *FD,
     ParmMap[PVD] = IPD;
     ++i;
   }
-  OutlinedFunctionDeclBodyInstantiator OFDBodyInstantiator(SemaRef, ParmMap,
-                                                           FD);
-  Stmt *TransformedBody = OFDBodyInstantiator.TransformStmt(Body).get();
-
   // Create kernel parameters for special types and create arguments to
   // sycl_handle_special_kernel_parameters call.
   // This is synthesizing the following pseudo-code:
   // void kernel-entry-point(lambda-from-f kernelFunc, buffer_t* X, int Y) {
-  //   sycl_handle_special_kernel_parameters<kernel-name-type>(kernelFunc.sout)(X, Y);
+  //   sycl_handle_special_kernel_parameters<kernel-name-type>(kernelFunc.sout).
+  //                                                          (X, Y);
   //   {
   //     // This is copied body of the orignal skep-attributed function.
   //     kernelFunc();
   //   }
   // }
   // where sout is has type marked with sycl_special_kernel_parameter attribute.
-  Stmt *OFDBody;
+  Stmt *ModifiedBody;
   if (IdExpr && !SpecialArgTys.empty()) {
+    // HandleArgs contains arguments for sycl_handle_special_kernel_parameters
+    // call, these are coming from subobjects of object whose type is marked
+    // with sycl_special_kernel_parameter attribute within skep-attributed
+    // function, i.e. kernelFunc.sout in the pseudo code above.
     SmallVector<Expr *, 8> HandleArgs;
-    for (unsigned I = 0; I < FD->getNumParams(); ++I) {
-      auto Param = OFD->getParam(I);
-      if (Param->getType()->isRecordType())
-        createArgumentsForSpecialTypes(HandleArgs, Param, Loc, SemaRef.SYCL());
+    for (ParmVarDecl *PVD : FD->parameters()) {
+      if (PVD->getType()->isRecordType())
+        createArgumentsForSpecialTypes(HandleArgs, PVD, Loc, SemaRef.SYCL());
     }
 
     // FIXME add better diagnosing.
@@ -843,26 +842,34 @@ BuildSYCLKernelEntryPointOutline(Sema &SemaRef, FunctionDecl *FD,
     // CSC.NumCallArgs = Args.size();
     // Sema::ScopedCodeSynthesisContext ScopedCSC(SemaRef, CSC);
 
-    // Handle args for sycl_handle_special_kernel_parameters call, these are
-    // coming from subobjects with sycl_special_kernel_parameter attribute
-    // within skep-attributed function arguments, SpecialArgs are additional kernel
-    // arguments that are needed to initialize special subobjects and they go
-    // to the subsequent call.
+    // SpecialArgs are additional kernel arguments that are needed to
+    // initialize special subobjects and they go to the subsequent call.
+    // These are (X, Y) in the pseudo code above.
     SmallVector<Expr *, 12> SpecialArgs;
     for (auto QT : SpecialArgTys) {
+      // Since these parameters do not exist in skep attributed function, we
+      // declare local variables instead.
+      VarDecl *VD = VarDecl::Create(
+          SemaRef.getASTContext(), SemaRef.getCurContext(), Loc, Loc,
+          &SemaRef.getASTContext().Idents.get("idk"), QT,
+          SemaRef.getASTContext().getTrivialTypeSourceInfo(QT, Loc), SC_None);
+      ExprResult Arg =
+          SemaRef.BuildDeclRefExpr(VD, QT, VK_LValue, SourceLocation());
+      assert(!Arg.isInvalid() && "synthesized code generation failed?");
+      SpecialArgs.push_back(Arg.get());
+
+      // Also create an implicit parameter for the device function.
       ImplicitParamDecl *IPD = ImplicitParamDecl::Create(
           SemaRef.getASTContext(), OFD, SourceLocation(),
           &SemaRef.getASTContext().Idents.get("idk"), QT,
           ImplicitParamKind::Other);
       OFD->setParam(i, IPD);
       ++i;
-      ExprResult Arg =
-          SemaRef.BuildDeclRefExpr(IPD, QT, VK_LValue, SourceLocation());
-      assert(!Arg.isInvalid() && "synthesized code generation failed?");
-      SpecialArgs.push_back(Arg.get());
+      ParmMap[VD] = IPD;
     }
 
-    // This generates sycl_handle_special_kernel_parameters<kernel-name-type>(kernelFunc.sout)
+    // This generates
+    // sycl_handle_special_kernel_parameters<kernel-name-type>(kernelFunc.sout)
     ExprResult FirstHandleCallResult = SemaRef.BuildCallExpr(
         SemaRef.getCurScope(), IdExpr, Loc, HandleArgs, Loc);
     if (FirstHandleCallResult.isInvalid())
@@ -872,26 +879,32 @@ BuildSYCLKernelEntryPointOutline(Sema &SemaRef, FunctionDecl *FD,
 
     Expr *BaseForSubsCall =
         SemaRef.MaybeCreateExprWithCleanups(FirstHandleCallResult).get();
+    // This generates
+    // sycl_handle_special_kernel_parameters<kernel-name-type>(kernelFunc.sout).
+    //                                                        (X, Y)
     ExprResult Result = SemaRef.BuildCallExpr(
         SemaRef.getCurScope(), BaseForSubsCall, Loc, SpecialArgs, Loc);
     if (Result.isInvalid())
       return true;
 
-    SmallVector<Stmt *> Stmts;
     // Make sure to push kernel argument processing result first, before the
-    // transformed body of skep-attributed function.
+    // body of skep-attributed function.
+    SmallVector<Stmt *> Stmts;
     Stmts.push_back(SemaRef.MaybeCreateExprWithCleanups(Result).get());
-    Stmts.push_back(TransformedBody);
-    OFDBody = CompoundStmt::Create(SemaRef.getASTContext(), Stmts,
-                                   FPOptionsOverride(), Loc, Loc);
+    Stmts.push_back(Body);
+    ModifiedBody = CompoundStmt::Create(SemaRef.getASTContext(), Stmts,
+                                        FPOptionsOverride(), Loc, Loc);
   } else {
-    OFDBody = TransformedBody;
+    ModifiedBody = Body;
   }
 
-  OFD->setBody(OFDBody);
+  OutlinedFunctionDeclBodyInstantiator OFDBodyInstantiator(SemaRef, ParmMap,
+                                                           FD);
+  Stmt *TransformedBody = OFDBodyInstantiator.TransformStmt(ModifiedBody).get();
+
+  OFD->setBody(TransformedBody);
   OFD->setNothrow();
   return OFD;
-
 }
 
 class KernelParamsChecker : public ConstSubobjectVisitor<KernelParamsChecker> {
