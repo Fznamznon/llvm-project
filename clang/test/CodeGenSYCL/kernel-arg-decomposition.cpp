@@ -50,6 +50,28 @@ void case1() {
     kernel_entry_point<KN<0>>([KernelArg](){});
 }
 
+struct SpecialArgData {
+  int *ptr;
+  int size;
+};
+
+struct [[clang::sycl_special_kernel_parameter]] SpecialBase {
+  int data;
+};
+
+struct DerivedFromSpecial : SpecialBase {
+  int extra;
+};
+
+auto set_kernel_arg(SpecialBase &a) {
+  return SpecialArgData{};
+}
+
+void case2() {
+    DerivedFromSpecial DFS;
+    kernel_entry_point<KN<1>>([DFS](){});
+}
+
 // CHECK-HOST-LABEL: define internal void @_Z18kernel_entry_pointI2KNILi0EEZ5case1vEUlvE_EvT0_(
 // CHECK-HOST-SAME: i32 [[KERNEL_COERCE0:%.*]], ptr [[KERNEL_COERCE1:%.*]])
 // CHECK-HOST:  [[ENTRY:.*:]]
@@ -92,5 +114,38 @@ void case1() {
 // CHECK-DEVICE:    [[TMP1:%.*]] = load i32, ptr addrspace(4) [[IDK_ADDR_ASCAST]], align 4
 // CHECK-DEVICE:    call spir_func void @_ZZ37sycl_handle_special_kernel_parametersI2KNILi0EEJ12EmptySpecialEEDaDpT0_ENKUlDpT_E_clIJiEEEDaS6_(ptr addrspace(4) noundef align 1 dereferenceable_or_null(1) [[REF_TMP_ASCAST]], i32 noundef [[TMP1]])
 // CHECK-DEVICE:    call spir_func void @_ZZ5case1vENKUlvE_clEv(ptr addrspace(4) noundef align 8 dereferenceable_or_null(16) [[KERNEL_ASCAST]])
+// CHECK-DEVICE:    ret void
+
+// Test that a class inheriting from a sycl_special_kernel_parameter type
+// produces a kernel entry point with a struct-typed additional parameter
+// (SpecialArgData) and accesses the SpecialBase via DerivedToBase cast.
+
+// CHECK-HOST-LABEL: define internal void @_Z18kernel_entry_pointI2KNILi1EEZ5case2vEUlvE_EvT0_(
+// CHECK-HOST-SAME: i64 [[KERNEL_COERCE:%.*]])
+// CHECK-HOST:  [[ENTRY:.*:]]
+// CHECK-HOST:    call void @_Z18sycl_kernel_launchI2KNILi1EEJZ5case2vEUlvE_EEDaPKcDpT0_(ptr noundef @.str.1, i64 %{{.*}})
+// CHECK-HOST:    [[TMP1:%.*]] = getelementptr inbounds nuw %class.anon.0, ptr %Kernel, i32 0, i32 0
+// CHECK-HOST-NEXT:    call void @_ZZ18sycl_kernel_launchI2KNILi1EEJZ5case2vEUlvE_EEDaPKcDpT0_ENKUlDpOT_E_clIJR11SpecialBaseEEEDaS9_(ptr noundef nonnull align 1 dereferenceable(1) %ref.tmp, ptr noundef nonnull align 4 dereferenceable(4) [[TMP1]])
+// CHECK-HOST-NEXT:    ret void
+
+// CHECK-DEVICE: define spir_kernel void @_ZTS2KNILi1EE(ptr noundef byval(%class.anon.1) align 4 [[KERNEL:%.*]], ptr noundef byval(%struct.SpecialArgData) align 8 [[IDK:%.*]])
+// CHECK-DEVICE:  [[ENTRY:.*:]]
+// CHECK-DEVICE:    [[REF_TMP:%.*]] = alloca [[CLASS_ANON_2:%.*]], align 1
+// CHECK-DEVICE:    [[AGG_TMP:%.*]] = alloca [[STRUCT_SPECIALBASE:%.*]], align 4
+// CHECK-DEVICE:    [[AGG_TMP1:%.*]] = alloca [[STRUCT_SPECIALARGDATA:%.*]], align 8
+// CHECK-DEVICE:    [[REF_TMP_ASCAST:%.*]] = addrspacecast ptr [[REF_TMP]] to ptr addrspace(4)
+// CHECK-DEVICE:    [[AGG_TMP_ASCAST:%.*]] = addrspacecast ptr [[AGG_TMP]] to ptr addrspace(4)
+// CHECK-DEVICE:    [[AGG_TMP1_ASCAST:%.*]] = addrspacecast ptr [[AGG_TMP1]] to ptr addrspace(4)
+// CHECK-DEVICE:    [[KERNEL_ASCAST:%.*]] = addrspacecast ptr [[KERNEL]] to ptr addrspace(4)
+// CHECK-DEVICE:    [[IDK_ASCAST:%.*]] = addrspacecast ptr [[IDK]] to ptr addrspace(4)
+// CHECK-DEVICE:    [[REF_TMP_ASCAST_ASCAST:%.*]] = addrspacecast ptr addrspace(4) [[REF_TMP_ASCAST]] to ptr
+// CHECK-DEVICE:    [[TMP0:%.*]] = getelementptr inbounds nuw [[CLASS_ANON_1:%.*]], ptr addrspace(4) [[KERNEL_ASCAST]], i32 0, i32 0
+// CHECK-DEVICE:    call void @llvm.memcpy.p4.p4.i64(ptr addrspace(4) align 4 [[AGG_TMP_ASCAST]], ptr addrspace(4) align 4 [[TMP0]], i64 4, i1 false)
+// CHECK-DEVICE:    [[AGG_TMP_ASCAST_ASCAST:%.*]] = addrspacecast ptr addrspace(4) [[AGG_TMP_ASCAST]] to ptr
+// CHECK-DEVICE:    call spir_func void @_Z37sycl_handle_special_kernel_parametersI2KNILi1EEJ11SpecialBaseEEDaDpT0_(ptr dead_on_unwind writable sret([[CLASS_ANON_2]]) align 1 [[REF_TMP_ASCAST_ASCAST]], ptr noundef byval([[STRUCT_SPECIALBASE]]) align 4 [[AGG_TMP_ASCAST_ASCAST]])
+// CHECK-DEVICE:    call void @llvm.memcpy.p4.p4.i64(ptr addrspace(4) align 8 [[AGG_TMP1_ASCAST]], ptr addrspace(4) align 8 [[IDK_ASCAST]], i64 16, i1 false)
+// CHECK-DEVICE:    [[AGG_TMP1_ASCAST_ASCAST:%.*]] = addrspacecast ptr addrspace(4) [[AGG_TMP1_ASCAST]] to ptr
+// CHECK-DEVICE:    call spir_func void @_ZZ37sycl_handle_special_kernel_parametersI2KNILi1EEJ11SpecialBaseEEDaDpT0_ENKUlDpT_E_clIJ14SpecialArgDataEEEDaS6_(ptr addrspace(4) noundef align 1 dereferenceable_or_null(1) [[REF_TMP_ASCAST]], ptr noundef byval([[STRUCT_SPECIALARGDATA]]) align 8 [[AGG_TMP1_ASCAST_ASCAST]])
+// CHECK-DEVICE:    call spir_func void @_ZZ5case2vENKUlvE_clEv(ptr addrspace(4) noundef align 4 dereferenceable_or_null(8) [[KERNEL_ASCAST]])
 // CHECK-DEVICE:    ret void
 

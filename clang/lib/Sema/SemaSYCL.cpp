@@ -595,7 +595,6 @@ public:
   }
 
   void visitBaseSpecifierPost(CXXBaseSpecifier *BS) {
-    // TODO: test bases
     if (isSyclSpecialType(BS->getType()))
       createResultingArg();
 
