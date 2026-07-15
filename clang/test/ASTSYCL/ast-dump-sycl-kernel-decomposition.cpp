@@ -5,8 +5,22 @@
 // RUN: %clang_cc1 -std=c++17 -triple x86_64-unknown-unknown -fsycl-is-host \
 // RUN:   -ast-dump %s \
 // RUN:   | FileCheck %s
+//
+// Tests with serialization:
+// RUN: %clang_cc1 -std=c++17 -triple spirv64-unknown-unknown -fsycl-is-device \
+// RUN:   -emit-pch -o %t %s
+// RUN: %clang_cc1 -x c++ -std=c++17 -triple spirv64-unknown-unknown -fsycl-is-device \
+// RUN:   -include-pch %t -ast-dump-all /dev/null \
+// RUN:   | sed -e "s/ <undeserialized declarations>//" -e "s/ imported//" \
+// RUN:   | FileCheck %s
+// RUN: %clang_cc1 -std=c++17 -triple x86_64-unknown-unknown -fsycl-is-host \
+// RUN:   -emit-pch -o %t %s
+// RUN: %clang_cc1 -x c++ -std=c++17 -triple x86_64-unknown-unknown -fsycl-is-host \
+// RUN:   -include-pch %t -ast-dump-all /dev/null \
+// RUN:   | sed -e "s/ <undeserialized declarations>//" -e "s/ imported//" \
+// RUN:   | FileCheck %s
 
-// Thes test validates the AST body produced for functions declared with the
+// This test validates the AST body produced for functions declared with the
 // sycl_kernel_entry_point attribute in case an argument of such function
 // contains an object that requires decomposition.
 
