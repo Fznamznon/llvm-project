@@ -425,13 +425,18 @@ void SemaSYCL::CheckSYCLEntryPointFunctionDecl(FunctionDecl *FD) {
   }
 }
 
-ExprResult SemaSYCL::BuildSYCLKernelLaunchIdExpr(FunctionDecl *FD,
-                                                 QualType KNT,
-                                                 StringRef FuncName) {
+ExprResult SemaSYCL::SynthesizeSYCLKernelIdExpr(
+    FunctionDecl *FD, QualType KNT,
+    Sema::CodeSynthesisContext::SynthesisKind SKind) {
   // The current context must be the function definition context to ensure
   // that name lookup is performed within the correct scope.
   assert(SemaRef.CurContext == FD && "The current declaration context does not "
                                      "match the requested function context");
+
+  assert(
+      SKind == Sema::CodeSynthesisContext::SYCLKernelLaunchLookup ||
+      SKind == Sema::CodeSynthesisContext::SYCLSpecialParametersHandlerLookup &&
+          "Only SYCL lookup is expected");
 
   // An appropriate source location is required to emit diagnostics if
   // lookup fails to produce an overload set. The desired location is the
@@ -440,6 +445,10 @@ ExprResult SemaSYCL::BuildSYCLKernelLaunchIdExpr(FunctionDecl *FD,
   // The general location of the function is used instead.
   SourceLocation Loc = FD->getLocation();
 
+  StringRef FuncName =
+      (SKind == Sema::CodeSynthesisContext::SYCLKernelLaunchLookup)
+          ? "sycl_kernel_launch"
+          : "sycl_handle_special_kernel_parameters";
   ASTContext &Ctx = SemaRef.getASTContext();
   IdentifierInfo &SYCLKernelLaunchID =
       Ctx.Idents.get(FuncName, tok::TokenKind::identifier);
@@ -448,9 +457,8 @@ ExprResult SemaSYCL::BuildSYCLKernelLaunchIdExpr(FunctionDecl *FD,
   // a template named 'sycl_kernel_launch'. In the event of an error, this
   // ensures an appropriate diagnostic note is issued to explain why the
   // lookup was performed.
-  // FIXME: Extend diagnostics for handle special parameters function
   Sema::CodeSynthesisContext CSC;
-  CSC.Kind = Sema::CodeSynthesisContext::SYCLKernelLaunchLookup;
+  CSC.Kind = SKind;
   CSC.Entity = FD;
   Sema::ScopedCodeSynthesisContext ScopedCSC(SemaRef, CSC);
 
@@ -676,6 +684,7 @@ StmtResult BuildSYCLKernelLaunchCallStmt(
         return StmtError();
     }
 
+    Expr *KernelLaunchRes;
     // Establish a code synthesis context for the implicit call to
     // 'sycl_kernel_launch'.
     {
@@ -690,39 +699,46 @@ StmtResult BuildSYCLKernelLaunchCallStmt(
           SemaRef.BuildCallExpr(SemaRef.getCurScope(), IdExpr, Loc, Args, Loc);
       if (LaunchResult.isInvalid())
         return StmtError();
-      Expr *BaseForSubsCall =
+      KernelLaunchRes =
           SemaRef.MaybeCreateExprWithCleanups(LaunchResult).get();
-      if (!BaseForSubsCall->getType()->isVoidType()) {
-        // FIXME: diagnose that sycl_kernel_launch call returned a callable
-        // object. Default diagnostic here is very uncldear
-        llvm::SmallVector<Expr *, 12> SpecialArgs;
-        for (auto Param : FD->parameters()) {
-          if (Param->getType()->isRecordType())
-            createArgumentsForSpecialTypes(SpecialArgs, Param, Loc,
-                                           SemaRef.SYCL());
-        }
-        ExprResult Result = SemaRef.BuildCallExpr(
-            SemaRef.getCurScope(), BaseForSubsCall, Loc, SpecialArgs, Loc);
-        if (Result.isInvalid())
-          return StmtError();
-
-        // Now gather types for device code generation. Callable object returned
-        // by sycl_kernel_launch call returns type_list object whose template
-        // arguments describe types of additional kernel arguments required for
-        // special objects, i.e. SYCL accessors/samplers/streams etc.
-        QualType Ty = Result.get()->getType();
-        // FIXME: that also needs to be diagnosed somewhere.
-        auto *TST = Ty->getAs<TemplateSpecializationType>();
-        if (!TST)
-          return StmtError();
-        for (auto Arg : TST->template_arguments()) {
-          SpecialArgTys.push_back(Arg.getAsType().getCanonicalType());
-        }
-
-        Stmts.push_back(SemaRef.MaybeCreateExprWithCleanups(Result).get());
-      } else {
-        Stmts.push_back(BaseForSubsCall);
+    }
+    if (!KernelLaunchRes->getType()->isVoidType()) {
+      llvm::SmallVector<Expr *, 12> SpecialArgs;
+      for (auto Param : FD->parameters()) {
+        if (Param->getType()->isRecordType())
+          createArgumentsForSpecialTypes(SpecialArgs, Param, Loc,
+                                         SemaRef.SYCL());
       }
+      // Establish a code synthesis context for the implicit call to callable
+      // object returned by 'sycl_kernel_launch'.
+      Sema::CodeSynthesisContext CSC;
+      CSC.Kind = Sema::CodeSynthesisContext::
+          SYCLKernelHostSpecialParametersHandlerCall;
+      CSC.Entity = FD;
+      CSC.CallArgs = SpecialArgs.data();
+      CSC.NumCallArgs = SpecialArgs.size();
+      Sema::ScopedCodeSynthesisContext ScopedCSC(SemaRef, CSC);
+
+      ExprResult Result = SemaRef.BuildCallExpr(
+          SemaRef.getCurScope(), KernelLaunchRes, Loc, SpecialArgs, Loc);
+      if (Result.isInvalid())
+        return StmtError();
+
+      // Now gather types for device code generation. Callable object returned
+      // by sycl_kernel_launch call returns type_list object whose template
+      // arguments describe types of additional kernel arguments required for
+      // special objects, i.e. SYCL accessors/samplers/streams etc.
+      QualType Ty = Result.get()->getType();
+      // FIXME: that also needs to be diagnosed somewhere.
+      auto *TST = Ty->getAs<TemplateSpecializationType>();
+      if (!TST)
+        return StmtError();
+      for (auto Arg : TST->template_arguments())
+        SpecialArgTys.push_back(Arg.getAsType().getCanonicalType());
+
+      Stmts.push_back(SemaRef.MaybeCreateExprWithCleanups(Result).get());
+    } else {
+      Stmts.push_back(KernelLaunchRes);
     }
   }
 
@@ -812,7 +828,7 @@ BuildSYCLKernelEntryPointOutline(Sema &SemaRef, FunctionDecl *FD,
   // sycl_handle_special_kernel_parameters call.
   // This is synthesizing the following pseudo-code:
   // void kernel-entry-point(lambda-from-f kernelFunc, buffer_t* X, int Y) {
-  //   sycl_handle_special_kernel_parameters<kernel-name-type>(kernelFunc.sout).
+  //   sycl_handle_special_kernel_parameters<kernel-name-type>(kernelFunc.sout)
   //                                                          (X, Y);
   //   {
   //     // This is copied body of the orignal skep-attributed function.
@@ -832,15 +848,6 @@ BuildSYCLKernelEntryPointOutline(Sema &SemaRef, FunctionDecl *FD,
         createArgumentsForSpecialTypes(HandleArgs, PVD, Loc, SemaRef.SYCL());
     }
 
-    // FIXME add better diagnosing.
-    // Sema::CodeSynthesisContext CSC;
-    // CSC.Kind =
-    // Sema::CodeSynthesisContext::SYCLKernelLaunchOverloadResolution;
-    // CSC.Entity = FD;
-    // CSC.CallArgs = Args.data();
-    // CSC.NumCallArgs = Args.size();
-    // Sema::ScopedCodeSynthesisContext ScopedCSC(SemaRef, CSC);
-
     // SpecialArgs are additional kernel arguments that are needed to
     // initialize special subobjects and they go to the subsequent call.
     // These are (X, Y) in the pseudo code above.
@@ -858,6 +865,7 @@ BuildSYCLKernelEntryPointOutline(Sema &SemaRef, FunctionDecl *FD,
       SpecialArgs.push_back(Arg.get());
 
       // Also create an implicit parameter for the device function.
+      // FIXME : IDK????
       ImplicitParamDecl *IPD = ImplicitParamDecl::Create(
           SemaRef.getASTContext(), OFD, SourceLocation(),
           &SemaRef.getASTContext().Idents.get("idk"), QT,
@@ -867,24 +875,42 @@ BuildSYCLKernelEntryPointOutline(Sema &SemaRef, FunctionDecl *FD,
       ParmMap[VD] = IPD;
     }
 
-    // This generates
-    // sycl_handle_special_kernel_parameters<kernel-name-type>(kernelFunc.sout)
-    ExprResult FirstHandleCallResult = SemaRef.BuildCallExpr(
-        SemaRef.getCurScope(), IdExpr, Loc, HandleArgs, Loc);
-    if (FirstHandleCallResult.isInvalid())
-      return true;
-    // FIXME: diagnose that sycl_special_kernel_parameter call returned a
-    // callable object. Default diagnostic here is very uncldear
+    Expr *BaseForSubsCall;
+    {
+      Sema::CodeSynthesisContext CSC;
+      CSC.Kind =
+          Sema::CodeSynthesisContext::SYCLSpecialParametersOverloadResolution;
+      CSC.Entity = FD;
+      CSC.CallArgs = HandleArgs.data();
+      CSC.NumCallArgs = HandleArgs.size();
+      Sema::ScopedCodeSynthesisContext ScopedCSC(SemaRef, CSC);
+      // This generates
+      // sycl_handle_special_kernel_parameters<kernel-name-type>(kernelFunc.sout)
+      ExprResult FirstHandleCallResult = SemaRef.BuildCallExpr(
+          SemaRef.getCurScope(), IdExpr, Loc, HandleArgs, Loc);
+      if (FirstHandleCallResult.isInvalid())
+        return true;
+      BaseForSubsCall =
+          SemaRef.MaybeCreateExprWithCleanups(FirstHandleCallResult).get();
+    }
 
-    Expr *BaseForSubsCall =
-        SemaRef.MaybeCreateExprWithCleanups(FirstHandleCallResult).get();
-    // This generates
-    // sycl_handle_special_kernel_parameters<kernel-name-type>(kernelFunc.sout).
-    //                                                        (X, Y)
-    ExprResult Result = SemaRef.BuildCallExpr(
-        SemaRef.getCurScope(), BaseForSubsCall, Loc, SpecialArgs, Loc);
-    if (Result.isInvalid())
-      return true;
+    ExprResult Result;
+    {
+      Sema::CodeSynthesisContext CSC;
+      CSC.Kind = Sema::CodeSynthesisContext::
+          SYCLKernelDeviceSpecialParametersHandlerCall;
+      CSC.Entity = FD;
+      CSC.CallArgs = SpecialArgs.data();
+      CSC.NumCallArgs = SpecialArgs.size();
+      Sema::ScopedCodeSynthesisContext ScopedCSC(SemaRef, CSC);
+      // This generates
+      // sycl_handle_special_kernel_parameters<kernel-name-type>(kernelFunc.sout)
+      //                                                        (X, Y)
+      Result = SemaRef.BuildCallExpr(
+          SemaRef.getCurScope(), BaseForSubsCall, Loc, SpecialArgs, Loc);
+      if (Result.isInvalid())
+        return true;
+    }
 
     // Make sure to push kernel argument processing result first, before the
     // body of skep-attributed function.

@@ -16488,8 +16488,9 @@ Decl *Sema::ActOnStartOfFunctionDef(Scope *FnBodyScope, Decl *D,
     // unresolved) call expression after the function body has been parsed.
     const auto *SKEPAttr = FD->getAttr<SYCLKernelEntryPointAttr>();
     if (!SKEPAttr->isInvalidAttr()) {
-      ExprResult LaunchIdExpr =
-          SYCL().BuildSYCLKernelLaunchIdExpr(FD, SKEPAttr->getKernelName(), "sycl_kernel_launch");
+      ExprResult LaunchIdExpr = SYCL().SynthesizeSYCLKernelIdExpr(
+          FD, SKEPAttr->getKernelName(),
+          CodeSynthesisContext::SYCLKernelLaunchLookup);
       // Do not mark 'FD' as invalid if construction of `LaunchIDExpr` produces
       // an invalid result. Name lookup failure for 'sycl_kernel_launch' is
       // treated as an error in the definition of 'FD'; treating it as an error
@@ -16498,12 +16499,13 @@ Decl *Sema::ActOnStartOfFunctionDef(Scope *FnBodyScope, Decl *D,
       // 'LaunchIDExpr' failed, then 'SYCLKernelLaunchIdExpr' will be assigned
       // a null pointer value below; that is expected.
       getCurFunction()->SYCLKernelLaunchIdExpr = LaunchIdExpr.get();
-      if (!LaunchIdExpr.isInvalid() &&
-          !LaunchIdExpr.get()->getType()->isVoidType()) {
-        ExprResult HSPSPIdExpr = SYCL().BuildSYCLKernelLaunchIdExpr(
-            FD, SKEPAttr->getKernelName(),
-            "sycl_handle_special_kernel_parameters");
-        getCurFunction()->HandleSYCLSpecialParamsIdExpr = HSPSPIdExpr.get();
+      if (!LaunchIdExpr.isInvalid()) {
+        ExprResult SpecialParamsHandlerIdExpr =
+            SYCL().SynthesizeSYCLKernelIdExpr(
+                FD, SKEPAttr->getKernelName(),
+                CodeSynthesisContext::SYCLSpecialParametersHandlerLookup);
+        getCurFunction()->HandleSYCLSpecialParamsIdExpr =
+            SpecialParamsHandlerIdExpr.get();
       }
     }
   }

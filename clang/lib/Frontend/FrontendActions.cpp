@@ -476,8 +476,12 @@ private:
       return "PartialOrderingTTP";
     case CodeSynthesisContext::SYCLKernelLaunchLookup:
       return "SYCLKernelLaunchLookup";
+    case CodeSynthesisContext::SYCLSpecialParametersHandlerLookup:
+      return "SYCLSpecialParametersHandlerLookup";
     case CodeSynthesisContext::SYCLKernelLaunchOverloadResolution:
       return "SYCLKernelLaunchOverloadResolution";
+    case CodeSynthesisContext::SYCLSpecialParametersOverloadResolution:
+      return "SYCLSpecialParametersOverloadResolution";
     }
     return "";
   }

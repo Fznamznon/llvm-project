@@ -13307,9 +13307,29 @@ public:
       /// template named 'sycl_kernel_launch'.
       SYCLKernelLaunchLookup,
 
+      /// We are performing name lookup for a function template or variable
+      /// template named 'sycl_handle_special_kernel_parameters'.
+      SYCLSpecialParametersHandlerLookup,
+
       /// We are performing overload resolution for a call to a function
       /// template or variable template named 'sycl_kernel_launch'.
       SYCLKernelLaunchOverloadResolution,
+
+      /// We are performing overload resolution for a call to a function
+      /// template or variable template named
+      /// 'sycl_handle_special_kernel_parameters'.
+      SYCLSpecialParametersOverloadResolution,
+
+      /// We are synthesizing a call to a callable object returned by implicit
+      /// call to 'sycl_kernel_launch' intended for SYCL kernel special
+      /// kernel arguments handling. This happens in host code.
+      SYCLKernelHostSpecialParametersHandlerCall,
+
+      /// We are synthesizing a call to a callable object returned by
+      /// implicit call to 'sycl_handle_special_kernel_parameters' intended for
+      /// SYCL kernel special kernel arguments handling. This happens in device
+      /// code.
+      SYCLKernelDeviceSpecialParametersHandlerCall,
     } Kind;
 
     /// Whether we're substituting into constraints.
