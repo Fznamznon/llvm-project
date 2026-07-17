@@ -482,6 +482,10 @@ private:
       return "SYCLKernelLaunchOverloadResolution";
     case CodeSynthesisContext::SYCLSpecialParametersOverloadResolution:
       return "SYCLSpecialParametersOverloadResolution";
+    case CodeSynthesisContext::SYCLKernelHostSpecialParametersHandlerCall:
+      return "SYCLKernelHostSpecialParametersHandlerCall";
+    case CodeSynthesisContext::SYCLKernelDeviceSpecialParametersHandlerCall:
+      return "SYCLKernelDeviceSpecialParametersHandlerCall";
     case CodeSynthesisContext::ExpansionStmtInstantiation:
       return "ExpansionStmtInstantiation";
     }

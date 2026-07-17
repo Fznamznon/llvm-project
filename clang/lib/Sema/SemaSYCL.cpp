@@ -729,10 +729,11 @@ StmtResult BuildSYCLKernelLaunchCallStmt(
       // arguments describe types of additional kernel arguments required for
       // special objects, i.e. SYCL accessors/samplers/streams etc.
       QualType Ty = Result.get()->getType();
-      // FIXME: that also needs to be diagnosed somewhere.
       auto *TST = Ty->getAs<TemplateSpecializationType>();
-      if (!TST)
+      if (!TST) {
+        SemaRef.Diag(Loc, diag::err_sycl_kernel_launch_not_type_list) << Ty;
         return StmtError();
+      }
       for (auto Arg : TST->template_arguments())
         SpecialArgTys.push_back(Arg.getAsType().getCanonicalType());
 

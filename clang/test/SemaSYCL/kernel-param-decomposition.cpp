@@ -207,3 +207,34 @@ void test() {
 }
 }
 
+// Check that if sycl_kernel_launch callable returns a non-template-specialization
+// type, an error is emitted.
+namespace bad7 {
+  template<int> struct BADKN;
+  struct KT {
+    Wrapper<SpecialType> w;
+    void operator()() const;
+  };
+  template<typename KN, typename... Ts>
+  auto sycl_handle_special_kernel_parameters(Ts...) {
+    return [](auto ...Args){ return; };
+  }
+  template <typename KernelName, typename... Ts>
+  auto sycl_kernel_launch(const char *, Ts...) {
+    // Returns a callable that returns 'int' instead of a type_list<...> specialization.
+    return [&](auto&&... extra_host_args) {
+      return 42;
+    };
+  }
+  // expected-error@+5 {{the callable returned by 'sycl_kernel_launch' must return a class template specialization; 'int' is not a class template specialization}}
+  // expected-note@+3 {{this indicates a problem with the SYCL runtime header files; please consider reporting this to your SYCL runtime provider}}
+  // expected-note@+2 {{in implicit call to callable object returned by 'sycl_kernel_launch' with arguments (lvalue of type 'SpecialType') required here}}
+  template<typename KNT, typename KTT>
+  [[clang::sycl_kernel_entry_point(KNT)]]
+  void skep(KTT Kernel) {
+    Kernel();
+  }
+  // expected-note@+1 {{in instantiation of function template specialization 'bad7::skep<bad7::BADKN<7>, bad7::KT>' requested here}}
+  template void skep<BADKN<7>>(KT);
+}
+
