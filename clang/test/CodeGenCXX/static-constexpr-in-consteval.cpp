@@ -74,7 +74,7 @@ int f() { return *why(); }
 int g() { return returnsarray()[2]; }
 // CHECK: define dso_local noundef i32 @_Z1gv()
 // CHECK-NEXT: entry:
-// CHECK-NEXT:   %0 = load i32, ptr getelementptr inbounds (i32, ptr @_ZZ12returnsarrayvE1a, i64 2), align 4
+// CHECK-NEXT:   %0 = load i32, ptr getelementptr inbounds nuw (i8, ptr @_ZZ12returnsarrayvE1a, i64 8), align 4
 // CHECK-NEXT:   ret i32 %0
 // CHECK-NEXT: }
 
