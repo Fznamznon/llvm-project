@@ -24,6 +24,9 @@ struct KT {
 };
 
 
+template<typename KN, typename... Ts>
+void sycl_handle_special_kernel_parameters(Ts...) {}
+
 // sycl_kernel_launch as function template at namespace scope.
 namespace ok1 {
   template<typename KN, typename... Ts>
@@ -557,4 +560,40 @@ namespace bad18 {
   void sycl_kernel_launch(Ts...) {}
   // expected-note@+1 {{in instantiation of function template specialization 'bad18::skep<BADKN<18>, BADKT<18>>' requested here}}
   template void skep<BADKN<18>>(BADKT<18>);
+}
+
+namespace bad19 {
+// Check that if sycl_kernel_launch doesn't return a callable
+// object, and error is emitted.
+template<int> struct KN;
+
+struct [[clang::sycl_special_kernel_parameter]] Special {
+  int data;
+};
+
+template<typename T>
+struct Wrapper {
+ T data;
+ int *data1;
+};
+
+template<typename... Ts>
+struct type_list {};
+
+template <typename KernelName, typename... Ts>
+auto sycl_kernel_launch(const char *, Ts...) {
+  return nullptr;
+}
+
+// expected-note@+3 {{this indicates a problem with the SYCL runtime header files; please consider reporting this to your SYCL runtime provider}}
+// expected-note@+2 {{in implicit call to callable object returned by 'sycl_kernel_launch' with arguments (lvalue of type 'bad19::Special') required here}}
+template <typename KN, typename KT>
+[[clang::sycl_kernel_entry_point(KN)]] void k(KT Kernel) { // expected-error {{called object type 'std::nullptr_t' is not a function or function pointer}}
+  Kernel();
+}
+void case1() {
+    Wrapper<Special> KernelArg;
+// expected-note@+1 {{in instantiation of function template specialization 'bad19::k<BADKN<19>, (lambda at}}
+    k<BADKN<19>>([KernelArg](){});
+}
 }

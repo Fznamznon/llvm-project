@@ -13355,9 +13355,29 @@ public:
       /// template named 'sycl_kernel_launch'.
       SYCLKernelLaunchLookup,
 
+      /// We are performing name lookup for a function template or variable
+      /// template named 'sycl_handle_special_kernel_parameters'.
+      SYCLSpecialParametersHandlerLookup,
+
       /// We are performing overload resolution for a call to a function
       /// template or variable template named 'sycl_kernel_launch'.
       SYCLKernelLaunchOverloadResolution,
+
+      /// We are performing overload resolution for a call to a function
+      /// template or variable template named
+      /// 'sycl_handle_special_kernel_parameters'.
+      SYCLSpecialParametersOverloadResolution,
+
+      /// We are synthesizing a call to a callable object returned by implicit
+      /// call to 'sycl_kernel_launch' intended for SYCL kernel special
+      /// kernel arguments handling. This happens in host code.
+      SYCLKernelHostSpecialParametersHandlerCall,
+
+      /// We are synthesizing a call to a callable object returned by
+      /// implicit call to 'sycl_handle_special_kernel_parameters' intended for
+      /// SYCL kernel special kernel arguments handling. This happens in device
+      /// code.
+      SYCLKernelDeviceSpecialParametersHandlerCall,
 
       /// We are instantiating an expansion statement.
       ExpansionStmtInstantiation,
@@ -13777,14 +13797,6 @@ public:
   /// when there are multiple errors or warnings in the same instantiation.
   // FIXME: Does this belong in Sema? It's tough to implement it anywhere else.
   unsigned LastEmittedCodeSynthesisContextDepth = 0;
-
-  /// The template instantiation callbacks to trace or track
-  /// instantiations (objects can be chained).
-  ///
-  /// This callbacks is used to print, trace or track template
-  /// instantiations as they are being constructed.
-  std::vector<std::unique_ptr<TemplateInstantiationCallback>>
-      TemplateInstCallbacks;
 
   /// The current index into pack expansion arguments that will be
   /// used for substitution of parameter packs.

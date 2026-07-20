@@ -425,12 +425,18 @@ void SemaSYCL::CheckSYCLEntryPointFunctionDecl(FunctionDecl *FD) {
   }
 }
 
-ExprResult SemaSYCL::BuildSYCLKernelLaunchIdExpr(FunctionDecl *FD,
-                                                 QualType KNT) {
+ExprResult SemaSYCL::SynthesizeSYCLKernelIdExpr(
+    FunctionDecl *FD, QualType KNT,
+    Sema::CodeSynthesisContext::SynthesisKind SKind) {
   // The current context must be the function definition context to ensure
   // that name lookup is performed within the correct scope.
   assert(SemaRef.CurContext == FD && "The current declaration context does not "
                                      "match the requested function context");
+
+  assert(
+      SKind == Sema::CodeSynthesisContext::SYCLKernelLaunchLookup ||
+      SKind == Sema::CodeSynthesisContext::SYCLSpecialParametersHandlerLookup &&
+          "Only SYCL lookup is expected");
 
   // An appropriate source location is required to emit diagnostics if
   // lookup fails to produce an overload set. The desired location is the
@@ -439,16 +445,20 @@ ExprResult SemaSYCL::BuildSYCLKernelLaunchIdExpr(FunctionDecl *FD,
   // The general location of the function is used instead.
   SourceLocation Loc = FD->getLocation();
 
+  StringRef FuncName =
+      (SKind == Sema::CodeSynthesisContext::SYCLKernelLaunchLookup)
+          ? "sycl_kernel_launch"
+          : "sycl_handle_special_kernel_parameters";
   ASTContext &Ctx = SemaRef.getASTContext();
   IdentifierInfo &SYCLKernelLaunchID =
-      Ctx.Idents.get("sycl_kernel_launch", tok::TokenKind::identifier);
+      Ctx.Idents.get(FuncName, tok::TokenKind::identifier);
 
   // Establish a code synthesis context for the implicit name lookup of
   // a template named 'sycl_kernel_launch'. In the event of an error, this
   // ensures an appropriate diagnostic note is issued to explain why the
   // lookup was performed.
   Sema::CodeSynthesisContext CSC;
-  CSC.Kind = Sema::CodeSynthesisContext::SYCLKernelLaunchLookup;
+  CSC.Kind = SKind;
   CSC.Entity = FD;
   Sema::ScopedCodeSynthesisContext ScopedCSC(SemaRef, CSC);
 
@@ -493,16 +503,129 @@ ExprResult SemaSYCL::BuildSYCLKernelLaunchIdExpr(FunctionDecl *FD,
   return IdExpr;
 }
 
+static bool isSyclSpecialType(QualType Ty) {
+  if (const auto *RT = Ty->getAsRecordDecl())
+    return RT->getMostRecentDecl()->hasAttr<SYCLSpecialKernelParameterAttr>();
+  return false;
+}
+
 namespace {
+
+class KernelSpecialParamsCreator
+    : public SubobjectVisitor<KernelSpecialParamsCreator> {
+  using ObjectAccess =
+      llvm::PointerUnion<ValueDecl *, CXXBaseSpecifier *, FieldDecl *>;
+  SemaSYCL &SemaSYCLRef;
+  SourceLocation SrcLoc;
+  SmallVector<ObjectAccess, 4> ObjectAccessPath;
+  llvm::SmallVectorImpl<Expr *> &ResultingArgs;
+  RecordDecl *CurRD;
+
+  Expr *buildMemberExpr(Expr *Base, ValueDecl *Member) {
+    DeclAccessPair MemberDAP = DeclAccessPair::make(Member, AS_none);
+    MemberExpr *Result = SemaSYCLRef.SemaRef.BuildMemberExpr(
+        Base, /*IsArrow */ false, SrcLoc, NestedNameSpecifierLoc(), SrcLoc,
+        Member, MemberDAP,
+        /*HadMultipleCandidates*/ false,
+        DeclarationNameInfo(Member->getDeclName(), SrcLoc), Member->getType(),
+        VK_LValue, OK_Ordinary);
+    return Result;
+  }
+  Expr *buildDerivedToBaseCast(Expr *Base, CXXBaseSpecifier *BS) {
+    CXXCastPath BasePath;
+    QualType DerivedTy = SemaSYCLRef.getASTContext().getCanonicalTagType(CurRD);
+    QualType BaseTy = BS->getType();
+    SemaSYCLRef.SemaRef.CheckDerivedToBaseConversion(DerivedTy, BaseTy, SrcLoc,
+                                                     SourceRange(), &BasePath,
+                                                     /*IgnoreBaseAccess*/ true);
+    auto *Cast = ImplicitCastExpr::Create(
+        SemaSYCLRef.getASTContext(), BaseTy, CK_DerivedToBase, Base,
+        /* CXXCastPath=*/&BasePath, VK_LValue, FPOptionsOverride());
+    return Cast;
+  }
+
+  void createResultingArg() {
+    SmallVector<Expr *, 16> MemberExprBases;
+    auto *Param = cast<ValueDecl *>(ObjectAccessPath.front());
+    QualType ParamTy = Param->getType().getNonReferenceType();
+    Expr *Base =
+        SemaSYCLRef.SemaRef.BuildDeclRefExpr(Param, ParamTy, VK_LValue, SrcLoc);
+    MemberExprBases.push_back(Base);
+
+    for (auto Parent : ObjectAccessPath) {
+      if (auto *FD = Parent.dyn_cast<FieldDecl *>()) {
+        MemberExprBases.push_back(buildMemberExpr(MemberExprBases.back(), FD));
+      } else if (auto *BS = Parent.dyn_cast<CXXBaseSpecifier *>()) {
+        MemberExprBases.push_back(
+            buildDerivedToBaseCast(MemberExprBases.back(), BS));
+      }
+    }
+    ResultingArgs.push_back(MemberExprBases.back());
+  }
+
+public:
+  KernelSpecialParamsCreator(SemaSYCL &SR, SourceLocation Loc,
+                             llvm::SmallVectorImpl<Expr *> &ResultingArgs)
+      : SubobjectVisitor<KernelSpecialParamsCreator>(SR.getASTContext()),
+        SemaSYCLRef(SR), SrcLoc(Loc), ResultingArgs(ResultingArgs) {}
+
+  void traverseRecord(RecordDecl *RD) {
+    CurRD = RD;
+    SubobjectVisitor::traverseRecord(RD);
+  }
+
+  void checkParameter(ValueDecl *PVD) {
+    ObjectAccessPath.push_back(PVD);
+    // Check the immediate type of the parameter.
+    visit(PVD->getType());
+    ObjectAccessPath.pop_back();
+    assert(ObjectAccessPath.empty());
+  }
+
+  bool visitBaseSpecifierPre(CXXBaseSpecifier *BS) {
+    ObjectAccessPath.push_back(BS);
+
+    // Do not visit inside of special types.
+    return !isSyclSpecialType(BS->getType());
+  }
+
+  bool visitFieldDeclPre(FieldDecl *FD) {
+    ObjectAccessPath.push_back(FD);
+
+    // Do not visit inside of special types.
+    return !isSyclSpecialType(FD->getType());
+  }
+  void visitFieldDeclPost(FieldDecl *FD) {
+    if (isSyclSpecialType(FD->getType()))
+      createResultingArg();
+
+    ObjectAccessPath.pop_back();
+  }
+
+  void visitBaseSpecifierPost(CXXBaseSpecifier *BS) {
+    if (isSyclSpecialType(BS->getType()))
+      createResultingArg();
+
+    ObjectAccessPath.pop_back();
+  }
+};
+
+static void createArgumentsForSpecialTypes(SmallVectorImpl<Expr *> &Args,
+                                           ValueDecl *KernelArgObj,
+                                           SourceLocation Loc,
+                                           SemaSYCL &SemaSYCLRef) {
+  KernelSpecialParamsCreator KSPC(SemaSYCLRef, Loc, Args);
+  KSPC.checkParameter(KernelArgObj);
+}
 
 // Constructs the arguments to be passed for the SYCL kernel launch call.
 // The first argument is a string literal that contains the SYCL kernel
 // name. The remaining arguments are the parameters of 'FD' passed as
 // move-elligible xvalues. Returns true on error and false otherwise.
-bool BuildSYCLKernelLaunchCallArgs(Sema &SemaRef, FunctionDecl *FD,
-                                   const SYCLKernelInfo *SKI,
-                                   SmallVectorImpl<Expr *> &Args,
-                                   SourceLocation Loc) {
+static bool BuildSYCLKernelLaunchCallArgs(Sema &SemaRef, FunctionDecl *FD,
+                                          const SYCLKernelInfo *SKI,
+                                          SmallVectorImpl<Expr *> &Args,
+                                          SourceLocation Loc) {
   // The current context must be the function definition context to ensure
   // that parameter references occur within the correct scope.
   assert(SemaRef.CurContext == FD && "The current declaration context does not "
@@ -541,9 +664,9 @@ bool BuildSYCLKernelLaunchCallArgs(Sema &SemaRef, FunctionDecl *FD,
 }
 
 // Constructs the SYCL kernel launch call.
-StmtResult BuildSYCLKernelLaunchCallStmt(Sema &SemaRef, FunctionDecl *FD,
-                                         const SYCLKernelInfo *SKI,
-                                         Expr *IdExpr, SourceLocation Loc) {
+StmtResult BuildSYCLKernelLaunchCallStmt(
+    Sema &SemaRef, FunctionDecl *FD, const SYCLKernelInfo *SKI, Expr *IdExpr,
+    SourceLocation Loc, SmallVectorImpl<QualType> &SpecialArgTys) {
   SmallVector<Stmt *> Stmts;
   // IdExpr may be null if name lookup failed.
   if (IdExpr) {
@@ -561,6 +684,7 @@ StmtResult BuildSYCLKernelLaunchCallStmt(Sema &SemaRef, FunctionDecl *FD,
         return StmtError();
     }
 
+    Expr *KernelLaunchRes;
     // Establish a code synthesis context for the implicit call to
     // 'sycl_kernel_launch'.
     {
@@ -575,8 +699,47 @@ StmtResult BuildSYCLKernelLaunchCallStmt(Sema &SemaRef, FunctionDecl *FD,
           SemaRef.BuildCallExpr(SemaRef.getCurScope(), IdExpr, Loc, Args, Loc);
       if (LaunchResult.isInvalid())
         return StmtError();
+      KernelLaunchRes =
+          SemaRef.MaybeCreateExprWithCleanups(LaunchResult).get();
+    }
+    if (!KernelLaunchRes->getType()->isVoidType()) {
+      llvm::SmallVector<Expr *, 12> SpecialArgs;
+      for (auto Param : FD->parameters()) {
+        if (Param->getType()->isRecordType())
+          createArgumentsForSpecialTypes(SpecialArgs, Param, Loc,
+                                         SemaRef.SYCL());
+      }
+      // Establish a code synthesis context for the implicit call to callable
+      // object returned by 'sycl_kernel_launch'.
+      Sema::CodeSynthesisContext CSC;
+      CSC.Kind = Sema::CodeSynthesisContext::
+          SYCLKernelHostSpecialParametersHandlerCall;
+      CSC.Entity = FD;
+      CSC.CallArgs = SpecialArgs.data();
+      CSC.NumCallArgs = SpecialArgs.size();
+      Sema::ScopedCodeSynthesisContext ScopedCSC(SemaRef, CSC);
 
-      Stmts.push_back(SemaRef.MaybeCreateExprWithCleanups(LaunchResult).get());
+      ExprResult Result = SemaRef.BuildCallExpr(
+          SemaRef.getCurScope(), KernelLaunchRes, Loc, SpecialArgs, Loc);
+      if (Result.isInvalid())
+        return StmtError();
+
+      // Now gather types for device code generation. Callable object returned
+      // by sycl_kernel_launch call returns type_list object whose template
+      // arguments describe types of additional kernel arguments required for
+      // special objects, i.e. SYCL accessors/samplers/streams etc.
+      QualType Ty = Result.get()->getType();
+      auto *TST = Ty->getAs<TemplateSpecializationType>();
+      if (!TST) {
+        SemaRef.Diag(Loc, diag::err_sycl_kernel_launch_not_type_list) << Ty;
+        return StmtError();
+      }
+      for (auto Arg : TST->template_arguments())
+        SpecialArgTys.push_back(Arg.getAsType().getCanonicalType());
+
+      Stmts.push_back(SemaRef.MaybeCreateExprWithCleanups(Result).get());
+    } else {
+      Stmts.push_back(KernelLaunchRes);
     }
   }
 
@@ -592,7 +755,7 @@ StmtResult BuildSYCLKernelLaunchCallStmt(Sema &SemaRef, FunctionDecl *FD,
 class OutlinedFunctionDeclBodyInstantiator
     : public TreeTransform<OutlinedFunctionDeclBodyInstantiator> {
 public:
-  using ParmDeclMap = llvm::DenseMap<ParmVarDecl *, VarDecl *>;
+  using ParmDeclMap = llvm::DenseMap<VarDecl *, VarDecl *>;
 
   OutlinedFunctionDeclBodyInstantiator(Sema &S, ParmDeclMap &M,
                                        FunctionDecl *FD)
@@ -602,17 +765,17 @@ public:
   // A new set of AST nodes is always required.
   bool AlwaysRebuild() { return true; }
 
-  // Transform ParmVarDecl references to the supplied replacement variables.
+  // Transform VarDecl references to the supplied replacement variables.
   ExprResult TransformDeclRefExpr(DeclRefExpr *DRE) {
-    const ParmVarDecl *PVD = dyn_cast<ParmVarDecl>(DRE->getDecl());
-    if (PVD) {
-      ParmDeclMap::iterator I = MapRef.find(PVD);
+    const VarDecl *OrigVD = dyn_cast<VarDecl>(DRE->getDecl());
+    if (OrigVD) {
+      ParmDeclMap::iterator I = MapRef.find(OrigVD);
       if (I != MapRef.end()) {
         VarDecl *VD = I->second;
         assert(SemaRef.getASTContext().hasSameUnqualifiedType(
-            PVD->getType().getNonReferenceType(), VD->getType()));
+            OrigVD->getType().getNonReferenceType(), VD->getType()));
         assert(!VD->getType().isMoreQualifiedThan(
-            PVD->getType().getNonReferenceType(), SemaRef.getASTContext()));
+            OrigVD->getType().getNonReferenceType(), SemaRef.getASTContext()));
         VD->setIsUsed();
         return DeclRefExpr::Create(
             SemaRef.getASTContext(), DRE->getQualifierLoc(),
@@ -639,14 +802,20 @@ private:
   FunctionDecl *FD;
 };
 
-OutlinedFunctionDecl *BuildSYCLKernelEntryPointOutline(Sema &SemaRef,
-                                                       FunctionDecl *FD,
-                                                       CompoundStmt *Body) {
+DeclResult
+BuildSYCLKernelEntryPointOutline(Sema &SemaRef, FunctionDecl *FD,
+                                 CompoundStmt *Body,
+                                 SmallVectorImpl<QualType> &SpecialArgTys,
+                                 Expr *IdExpr, SourceLocation Loc) {
   using ParmDeclMap = OutlinedFunctionDeclBodyInstantiator::ParmDeclMap;
   ParmDeclMap ParmMap;
 
   OutlinedFunctionDecl *OFD = OutlinedFunctionDecl::Create(
-      SemaRef.getASTContext(), FD, FD->getNumParams());
+      SemaRef.getASTContext(), FD, FD->getNumParams() + SpecialArgTys.size());
+
+  // We create everything in DeclContext of the original function (FD) and then
+  // replace all references to original function's parameters or variables
+  // using a TreeTransform.
   unsigned i = 0;
   for (ParmVarDecl *PVD : FD->parameters()) {
     ImplicitParamDecl *IPD = ImplicitParamDecl::Create(
@@ -656,13 +825,111 @@ OutlinedFunctionDecl *BuildSYCLKernelEntryPointOutline(Sema &SemaRef,
     ParmMap[PVD] = IPD;
     ++i;
   }
+  // Create kernel parameters for special types and create arguments to
+  // sycl_handle_special_kernel_parameters call.
+  // This is synthesizing the following pseudo-code:
+  // void kernel-entry-point(lambda-from-f kernelFunc, buffer_t* X, int Y) {
+  //   sycl_handle_special_kernel_parameters<kernel-name-type>(kernelFunc.sout)
+  //                                                          (X, Y);
+  //   {
+  //     // This is copied body of the orignal skep-attributed function.
+  //     kernelFunc();
+  //   }
+  // }
+  // where sout is has type marked with sycl_special_kernel_parameter attribute.
+  Stmt *ModifiedBody;
+  if (IdExpr && !SpecialArgTys.empty()) {
+    // HandleArgs contains arguments for sycl_handle_special_kernel_parameters
+    // call, these are coming from subobjects of object whose type is marked
+    // with sycl_special_kernel_parameter attribute within skep-attributed
+    // function, i.e. kernelFunc.sout in the pseudo code above.
+    SmallVector<Expr *, 8> HandleArgs;
+    for (ParmVarDecl *PVD : FD->parameters()) {
+      if (PVD->getType()->isRecordType())
+        createArgumentsForSpecialTypes(HandleArgs, PVD, Loc, SemaRef.SYCL());
+    }
+
+    // SpecialArgs are additional kernel arguments that are needed to
+    // initialize special subobjects and they go to the subsequent call.
+    // These are (X, Y) in the pseudo code above.
+    SmallVector<Expr *, 12> SpecialArgs;
+    for (auto QT : SpecialArgTys) {
+      // Since these parameters do not exist in skep attributed function, we
+      // declare local variables instead.
+      VarDecl *VD = VarDecl::Create(
+          SemaRef.getASTContext(), SemaRef.getCurContext(), Loc, Loc,
+          &SemaRef.getASTContext().Idents.get("idk"), QT,
+          SemaRef.getASTContext().getTrivialTypeSourceInfo(QT, Loc), SC_None);
+      ExprResult Arg =
+          SemaRef.BuildDeclRefExpr(VD, QT, VK_LValue, SourceLocation());
+      assert(!Arg.isInvalid() && "synthesized code generation failed?");
+      SpecialArgs.push_back(Arg.get());
+
+      // Also create an implicit parameter for the device function.
+      // FIXME : IDK????
+      ImplicitParamDecl *IPD = ImplicitParamDecl::Create(
+          SemaRef.getASTContext(), OFD, SourceLocation(),
+          &SemaRef.getASTContext().Idents.get("idk"), QT,
+          ImplicitParamKind::Other);
+      OFD->setParam(i, IPD);
+      ++i;
+      ParmMap[VD] = IPD;
+    }
+
+    Expr *BaseForSubsCall;
+    {
+      Sema::CodeSynthesisContext CSC;
+      CSC.Kind =
+          Sema::CodeSynthesisContext::SYCLSpecialParametersOverloadResolution;
+      CSC.Entity = FD;
+      CSC.CallArgs = HandleArgs.data();
+      CSC.NumCallArgs = HandleArgs.size();
+      Sema::ScopedCodeSynthesisContext ScopedCSC(SemaRef, CSC);
+      // This generates
+      // sycl_handle_special_kernel_parameters<kernel-name-type>(kernelFunc.sout)
+      ExprResult FirstHandleCallResult = SemaRef.BuildCallExpr(
+          SemaRef.getCurScope(), IdExpr, Loc, HandleArgs, Loc);
+      if (FirstHandleCallResult.isInvalid())
+        return true;
+      BaseForSubsCall =
+          SemaRef.MaybeCreateExprWithCleanups(FirstHandleCallResult).get();
+    }
+
+    ExprResult Result;
+    {
+      Sema::CodeSynthesisContext CSC;
+      CSC.Kind = Sema::CodeSynthesisContext::
+          SYCLKernelDeviceSpecialParametersHandlerCall;
+      CSC.Entity = FD;
+      CSC.CallArgs = SpecialArgs.data();
+      CSC.NumCallArgs = SpecialArgs.size();
+      Sema::ScopedCodeSynthesisContext ScopedCSC(SemaRef, CSC);
+      // This generates
+      // sycl_handle_special_kernel_parameters<kernel-name-type>(kernelFunc.sout)
+      //                                                        (X, Y)
+      Result = SemaRef.BuildCallExpr(
+          SemaRef.getCurScope(), BaseForSubsCall, Loc, SpecialArgs, Loc);
+      if (Result.isInvalid())
+        return true;
+    }
+
+    // Make sure to push kernel argument processing result first, before the
+    // body of skep-attributed function.
+    SmallVector<Stmt *> Stmts;
+    Stmts.push_back(SemaRef.MaybeCreateExprWithCleanups(Result).get());
+    Stmts.push_back(Body);
+    ModifiedBody = CompoundStmt::Create(SemaRef.getASTContext(), Stmts,
+                                        FPOptionsOverride(), Loc, Loc);
+  } else {
+    ModifiedBody = Body;
+  }
 
   OutlinedFunctionDeclBodyInstantiator OFDBodyInstantiator(SemaRef, ParmMap,
                                                            FD);
-  Stmt *OFDBody = OFDBodyInstantiator.TransformStmt(Body).get();
-  OFD->setBody(OFDBody);
-  OFD->setNothrow();
+  Stmt *TransformedBody = OFDBodyInstantiator.TransformStmt(ModifiedBody).get();
 
+  OFD->setBody(TransformedBody);
+  OFD->setNothrow();
   return OFD;
 }
 
@@ -773,7 +1040,8 @@ bool verifyKernelParams(FunctionDecl *FD, SemaSYCL &SemaSYCLRef) {
 
 StmtResult SemaSYCL::BuildSYCLKernelCallStmt(FunctionDecl *FD,
                                              CompoundStmt *Body,
-                                             Expr *LaunchIdExpr) {
+                                             Expr *LaunchIdExpr,
+                                             Expr *HandleSpecParamsExpr) {
   assert(!FD->isInvalidDecl());
   assert(!FD->isTemplated());
   assert(FD->hasPrototype());
@@ -797,27 +1065,31 @@ StmtResult SemaSYCL::BuildSYCLKernelCallStmt(FunctionDecl *FD,
   if (verifyKernelParams(FD, *this))
     return StmtError();
 
-  // Build the outline of the synthesized device entry point function.
-  OutlinedFunctionDecl *OFD =
-      BuildSYCLKernelEntryPointOutline(SemaRef, FD, Body);
-  assert(OFD);
-
+  SourceLocation Loc = Body->getLBracLoc();
   // Build the host kernel launch statement. An appropriate source location
   // is required to emit diagnostics.
-  SourceLocation Loc = Body->getLBracLoc();
-  StmtResult LaunchResult =
-      BuildSYCLKernelLaunchCallStmt(SemaRef, FD, &SKI, LaunchIdExpr, Loc);
+  llvm::SmallVector<QualType, 8> SpecialArgTys;
+  StmtResult LaunchResult = BuildSYCLKernelLaunchCallStmt(
+      SemaRef, FD, &SKI, LaunchIdExpr, Loc, SpecialArgTys);
+
   if (LaunchResult.isInvalid())
     return StmtError();
 
-  Stmt *NewBody =
-      new (getASTContext()) SYCLKernelCallStmt(Body, LaunchResult.get(), OFD);
+  // Build the outline of the synthesized device entry point function.
+  DeclResult OFD = BuildSYCLKernelEntryPointOutline(
+      SemaRef, FD, Body, SpecialArgTys, HandleSpecParamsExpr, Loc);
+
+  if (OFD.isInvalid())
+    return StmtError();
+
+  Stmt *NewBody = new (getASTContext()) SYCLKernelCallStmt(
+      Body, LaunchResult.get(), cast<OutlinedFunctionDecl>(OFD.get()));
 
   return NewBody;
 }
 
-StmtResult SemaSYCL::BuildUnresolvedSYCLKernelCallStmt(CompoundStmt *Body,
-                                                       Expr *LaunchIdExpr) {
-  return UnresolvedSYCLKernelCallStmt::Create(SemaRef.getASTContext(), Body,
-                                              LaunchIdExpr);
+StmtResult SemaSYCL::BuildUnresolvedSYCLKernelCallStmt(
+    CompoundStmt *Body, Expr *LaunchIdExpr, Expr *HandleSpecParamsExpr) {
+  return UnresolvedSYCLKernelCallStmt::Create(
+      SemaRef.getASTContext(), Body, LaunchIdExpr, HandleSpecParamsExpr);
 }

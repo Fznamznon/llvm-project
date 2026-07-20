@@ -33,7 +33,6 @@
 #include "clang/Sema/SemaInternal.h"
 #include "clang/Sema/Template.h"
 #include "clang/Sema/TemplateDeduction.h"
-#include "clang/Sema/TemplateInstCallback.h"
 #include "llvm/ADT/SmallVectorExtras.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -593,7 +592,11 @@ bool Sema::CodeSynthesisContext::isInstantiationRecord() const {
   case TypeAliasTemplateInstantiation:
   case PartialOrderingTTP:
   case SYCLKernelLaunchLookup:
+  case SYCLSpecialParametersHandlerLookup:
   case SYCLKernelLaunchOverloadResolution:
+  case SYCLSpecialParametersOverloadResolution:
+  case SYCLKernelHostSpecialParametersHandlerCall:
+  case SYCLKernelDeviceSpecialParametersHandlerCall:
     return false;
 
   // This function should never be called when Kind's value is Memoization.
@@ -638,8 +641,6 @@ Sema::InstantiatingTemplate::InstantiatingTemplate(
   }
 
   Invalid = SemaRef.pushCodeSynthesisContext(Inst);
-  if (!Invalid)
-    atTemplateBegin(SemaRef.TemplateInstCallbacks, SemaRef, Inst);
 }
 
 Sema::InstantiatingTemplate::InstantiatingTemplate(
@@ -879,9 +880,6 @@ void Sema::popCodeSynthesisContext() {
 
 void Sema::InstantiatingTemplate::Clear() {
   if (!Invalid) {
-    atTemplateEnd(SemaRef.TemplateInstCallbacks, SemaRef,
-                  SemaRef.CodeSynthesisContexts.back());
-
     SemaRef.popCodeSynthesisContext();
     Invalid = true;
   }
@@ -1276,31 +1274,66 @@ void Sema::PrintInstantiationStack(InstantiationContextDiagFuncRef DiagFunc) {
                                << /*isTemplateTemplateParam=*/true
                                << Active->InstantiationRange);
       break;
-    case CodeSynthesisContext::SYCLKernelLaunchLookup: {
+    case CodeSynthesisContext::SYCLKernelLaunchLookup:
+    case CodeSynthesisContext::SYCLSpecialParametersHandlerLookup: {
       const auto *SKEPAttr =
           Active->Entity->getAttr<SYCLKernelEntryPointAttr>();
       assert(SKEPAttr && "Missing sycl_kernel_entry_point attribute");
       assert(!SKEPAttr->isInvalidAttr() &&
              "sycl_kernel_entry_point attribute is invalid");
       DiagFunc(SKEPAttr->getLocation(), PDiag(diag::note_sycl_runtime_defect));
+      std::string Name =
+          (Active->Kind ==
+           CodeSynthesisContext::SYCLKernelLaunchLookup)
+              ? "sycl_kernel_launch"
+              : "sycl_handle_special_kernel_parameters";
       DiagFunc(SKEPAttr->getLocation(),
-               PDiag(diag::note_sycl_kernel_launch_lookup_here)
-                   << SKEPAttr->getKernelName());
+               PDiag(diag::note_sycl_kernel_implicit_lookup_here)
+                   << Name << SKEPAttr->getKernelName());
       break;
     }
-    case CodeSynthesisContext::SYCLKernelLaunchOverloadResolution: {
+    case CodeSynthesisContext::SYCLKernelLaunchOverloadResolution:
+    case CodeSynthesisContext::SYCLSpecialParametersOverloadResolution: {
       const auto *SKEPAttr =
           Active->Entity->getAttr<SYCLKernelEntryPointAttr>();
       assert(SKEPAttr && "Missing sycl_kernel_entry_point attribute");
       assert(!SKEPAttr->isInvalidAttr() &&
              "sycl_kernel_entry_point attribute is invalid");
       DiagFunc(SKEPAttr->getLocation(), PDiag(diag::note_sycl_runtime_defect));
+      std::string Name =
+          (Active->Kind ==
+           CodeSynthesisContext::SYCLKernelLaunchOverloadResolution)
+              ? "sycl_kernel_launch"
+              : "sycl_handle_special_kernel_parameters";
       DiagFunc(SKEPAttr->getLocation(),
-               PDiag(diag::note_sycl_kernel_launch_overload_resolution_here)
-                   << SKEPAttr->getKernelName()
+               PDiag(diag::note_sycl_kernel_implicit_overload_resolution_here)
+                   << Name << SKEPAttr->getKernelName()
                    << convertCallArgsValueCategoryAndTypeToString(
                           *this, llvm::ArrayRef(Active->CallArgs,
                                                 Active->NumCallArgs)));
+      break;
+    }
+    case CodeSynthesisContext::SYCLKernelDeviceSpecialParametersHandlerCall:
+    case CodeSynthesisContext::SYCLKernelHostSpecialParametersHandlerCall: {
+      const auto *SKEPAttr =
+          Active->Entity->getAttr<SYCLKernelEntryPointAttr>();
+      assert(SKEPAttr && "Missing sycl_kernel_entry_point attribute");
+      assert(!SKEPAttr->isInvalidAttr() &&
+             "sycl_kernel_entry_point attribute is invalid");
+      DiagFunc(SKEPAttr->getLocation(), PDiag(diag::note_sycl_runtime_defect));
+      std::string CalleeName = "callable object returned by ";
+      CalleeName +=
+          (Active->Kind ==
+           CodeSynthesisContext::SYCLKernelHostSpecialParametersHandlerCall)
+              ? "'sycl_kernel_launch'"
+              : "'sycl_handle_special_kernel_parameters'";
+      DiagFunc(SKEPAttr->getLocation(),
+               PDiag(diag::note_sycl_kernel_implicit_call_here)
+                   << CalleeName
+                   << convertCallArgsValueCategoryAndTypeToString(
+                          *this, llvm::ArrayRef(Active->CallArgs,
+                                                Active->NumCallArgs)));
+
       break;
     }
     case CodeSynthesisContext::ExpansionStmtInstantiation:
@@ -2247,9 +2280,15 @@ TemplateInstantiator::TransformTemplateParmRefExpr(DeclRefExpr *E,
   auto [AssociatedDecl, Final] =
       TemplateArgs.getAssociatedDecl(NTTP->getDepth());
   UnsignedOrNone PackIndex = std::nullopt;
-  if (NTTP->isParameterPack()) {
-    assert(Arg.getKind() == TemplateArgument::Pack &&
-           "Missing argument pack");
+  if (NTTP->isParameterPack() ||
+      // In concept parameter mapping for fold expressions, packs that aren't
+      // expanded in place are treated as having non-pack dependency, so that
+      // a PackExpansionType won't prevent expanding the packs outside the
+      // TreeTransform. However, we still need to unpack the arguments during
+      // any template argument substitution, so we also check its FoundDecl.
+      (E->getFoundDecl() && E->getFoundDecl() != E->getDecl() &&
+       E->getFoundDecl()->isParameterPack())) {
+    assert(Arg.getKind() == TemplateArgument::Pack && "Missing argument pack");
 
     if (!getSema().ArgPackSubstIndex) {
       // We have an argument pack, but we can't select a particular argument

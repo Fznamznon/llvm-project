@@ -3038,6 +3038,7 @@ DEF_TRAVERSE_STMT(UnresolvedSYCLKernelCallStmt, {
   if (getDerived().shouldVisitImplicitCode()) {
     TRY_TO(TraverseStmt(S->getOriginalStmt()));
     TRY_TO(TraverseStmt(S->getKernelLaunchIdExpr()));
+    TRY_TO(TraverseStmt(S->getSpecArgsIdExpr()));
     ShouldVisitChildren = false;
   }
 })
@@ -4094,6 +4095,8 @@ bool RecursiveASTVisitor<Derived>::VisitOMPNumTeamsClause(
 template <typename Derived>
 bool RecursiveASTVisitor<Derived>::VisitOMPThreadLimitClause(
     OMPThreadLimitClause *C) {
+  if (auto *E = C->getModifierExpr())
+    TRY_TO(VisitStmt(E));
   TRY_TO(VisitOMPClauseList(C));
   TRY_TO(VisitOMPClauseWithPreInit(C));
   return true;
