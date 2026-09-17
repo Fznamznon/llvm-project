@@ -14,18 +14,138 @@
 
 #include "mlir/IR/Value.h"
 #include "clang/Basic/TargetBuiltins.h"
+#include "clang/Basic/TargetOptions.h"
 #include "llvm/Support/AMDGPUAddrSpace.h"
+#include "llvm/Target/TargetOptions.h"
 #include "llvm/Support/ErrorHandling.h"
 
 using namespace clang;
 using namespace clang::CIRGen;
 using namespace cir;
 
+// Forward declaration — defined later in this file.
+static mlir::Value emitAMDGPUDispatchPtr(CIRGenFunction &cgf,
+                                         const CallExpr *e = nullptr);
+
+// Return the AMDGPU workgroup-ID intrinsic name for dimension \p index.
+static llvm::StringRef getAMDGPUWorkGroupIDIntrinsic(unsigned index) {
+  assert(index < 3);
+  static const llvm::StringRef names[3] = {"amdgcn.workgroup.id.x",
+                                           "amdgcn.workgroup.id.y",
+                                           "amdgcn.workgroup.id.z"};
+  return names[index];
+}
+
+// Emit an implicit-arg pointer (COV_5+ ABI).
+static mlir::Value emitAMDGPUImplicitArgPtr(CIRGenFunction &cgf) {
+  CIRGenBuilderTy &builder = cgf.getBuilder();
+  mlir::Location loc = builder.getUnknownLoc();
+  mlir::Type retTy = cir::PointerType::get(
+      cir::VoidType::get(builder.getContext()),
+      cir::TargetAddressSpaceAttr::get(builder.getContext(),
+                                       llvm::AMDGPUAS::CONSTANT_ADDRESS));
+  return builder.emitIntrinsicCallOp(loc, "amdgcn.implicitarg.ptr", retTy,
+                                     mlir::ValueRange{});
+}
+
+// COV_5+ path: read workgroup size from the implicit kernarg segment.
+// Mirrors emitAMDGPUWorkGroupSizeV5 in classic codegen.
+static mlir::Value emitAMDGPUWorkGroupSizeV5(CIRGenFunction &cgf,
+                                              unsigned index) {
+  CIRGenBuilderTy &builder = cgf.getBuilder();
+  mlir::Location loc = builder.getUnknownLoc();
+  mlir::Type i8Ty = builder.getUInt8Ty();
+  mlir::Type i16Ty = builder.getUInt16Ty();
+  mlir::Type i32Ty = builder.getSInt32Ty();
+
+  mlir::Value implicitArgPtr = emitAMDGPUImplicitArgPtr(cgf);
+
+  // offsetof(amdhsa_implicit_kernarg_v5, group_size[index])
+  unsigned groupSizeOffset = 12 + index * 2;
+
+  // GEP into i8* then load i16
+  mlir::Value groupSizeGEP = cir::PtrStrideOp::create(
+      builder, loc, implicitArgPtr.getType(), implicitArgPtr,
+      builder.getConstant(loc, cir::IntAttr::get(i32Ty, groupSizeOffset)));
+  // Cast to i16*
+  mlir::Type i16PtrTy = cir::PointerType::get(
+      i16Ty,
+      mlir::cast<cir::PointerType>(implicitArgPtr.getType()).getAddrSpace());
+  mlir::Value i16Ptr = builder.createBitcast(groupSizeGEP, i16PtrTy);
+  mlir::Value groupSize16 =
+      builder.createLoad(loc, Address(i16Ptr, CharUnits::fromQuantity(2)));
+
+  // Zero-extend to i32
+  return cir::CastOp::create(builder, loc, i32Ty, cir::CastKind::integral,
+                              groupSize16);
+}
+
+// COV_4 path: read workgroup size from the dispatch packet.
+// Mirrors emitAMDGPUWorkGroupSizeV4 in classic codegen.
+static mlir::Value emitAMDGPUWorkGroupSizeV4(CIRGenFunction &cgf,
+                                              unsigned index) {
+  CIRGenBuilderTy &builder = cgf.getBuilder();
+  mlir::Location loc = builder.getUnknownLoc();
+  mlir::Type i16Ty = builder.getUInt16Ty();
+  mlir::Type i32Ty = builder.getSInt32Ty();
+
+  mlir::Value dispatchPtr = emitAMDGPUDispatchPtr(cgf);
+
+  // HSA dispatch packet: group_size_{x,y,z} at offsets 4, 6, 8
+  unsigned groupSizeOffset = 4 + index * 2;
+  mlir::Value groupSizeGEP = cir::PtrStrideOp::create(
+      builder, loc, dispatchPtr.getType(), dispatchPtr,
+      builder.getConstant(loc, cir::IntAttr::get(i32Ty, groupSizeOffset)));
+  mlir::Type i16PtrTy = cir::PointerType::get(
+      i16Ty,
+      mlir::cast<cir::PointerType>(dispatchPtr.getType()).getAddrSpace());
+  mlir::Value i16Ptr = builder.createBitcast(groupSizeGEP, i16PtrTy);
+  mlir::Value groupSize16 =
+      builder.createLoad(loc, Address(i16Ptr, CharUnits::fromQuantity(2)));
+
+  return cir::CastOp::create(builder, loc, i32Ty, cir::CastKind::integral,
+                              groupSize16);
+}
+
+// Top-level workgroup size emission — picks COV_4 or COV_5+ path.
+static mlir::Value emitAMDGPUWorkGroupSize(CIRGenFunction &cgf,
+                                            const CallExpr *expr,
+                                            unsigned index) {
+  auto cov = cgf.getTarget().getTargetOpts().CodeObjectVersion;
+  if (cov == llvm::CodeObjectVersionKind::COV_None &&
+      cgf.getTarget().getTriple().hasEnvironment())
+    cov = llvm::CodeObjectVersionKind::COV_6;
+
+  if (cov >= llvm::CodeObjectVersionKind::COV_5)
+    return emitAMDGPUWorkGroupSizeV5(cgf, index);
+  return emitAMDGPUWorkGroupSizeV4(cgf, index);
+}
+
+// Grid size: read from dispatch packet at offsets 12, 16, 20.
+static mlir::Value emitAMDGPUGridSize(CIRGenFunction &cgf,
+                                       const CallExpr *expr, unsigned index) {
+  CIRGenBuilderTy &builder = cgf.getBuilder();
+  mlir::Location loc = cgf.getLoc(expr->getExprLoc());
+  mlir::Type i32Ty = builder.getSInt32Ty();
+
+  mlir::Value dispatchPtr = emitAMDGPUDispatchPtr(cgf);
+
+  unsigned gridSizeOffset = 12 + index * 4;
+  mlir::Value gep = cir::PtrStrideOp::create(
+      builder, loc, dispatchPtr.getType(), dispatchPtr,
+      builder.getConstant(loc, cir::IntAttr::get(i32Ty, gridSizeOffset)));
+  mlir::Type i32PtrTy = cir::PointerType::get(
+      i32Ty,
+      mlir::cast<cir::PointerType>(dispatchPtr.getType()).getAddrSpace());
+  mlir::Value i32Ptr = builder.createBitcast(gep, i32PtrTy);
+  return builder.createLoad(loc, Address(i32Ptr, CharUnits::fromQuantity(4)));
+}
+
 // Emit the `amdgcn.dispatch.ptr` intrinsic, address-space-casting the
 // result to match \p e's return type when needed.
 // If \p e is null, returns the raw AS-4 pointer.
 static mlir::Value emitAMDGPUDispatchPtr(CIRGenFunction &cgf,
-                                         const CallExpr *e = nullptr) {
+                                         const CallExpr *e) {
   CIRGenBuilderTy &builder = cgf.getBuilder();
   mlir::Location loc =
       e ? cgf.getLoc(e->getExprLoc()) : builder.getUnknownLoc();
@@ -938,18 +1058,20 @@ CIRGenFunction::emitAMDGPUBuiltinExpr(unsigned builtinId,
   case AMDGPU::BI__builtin_amdgcn_workgroup_size_x:
   case AMDGPU::BI__builtin_amdgcn_workgroup_size_y:
   case AMDGPU::BI__builtin_amdgcn_workgroup_size_z: {
-    cgm.errorNYI(expr->getSourceRange(),
-                 std::string("unimplemented AMDGPU builtin call: ") +
-                     getContext().BuiltinInfo.getName(builtinId));
-    return mlir::Value{};
+    unsigned index =
+        builtinId == AMDGPU::BI__builtin_amdgcn_workgroup_size_x   ? 0
+        : builtinId == AMDGPU::BI__builtin_amdgcn_workgroup_size_y ? 1
+                                                                    : 2;
+    return emitAMDGPUWorkGroupSize(*this, expr, index);
   }
   case AMDGPU::BI__builtin_amdgcn_grid_size_x:
   case AMDGPU::BI__builtin_amdgcn_grid_size_y:
   case AMDGPU::BI__builtin_amdgcn_grid_size_z: {
-    cgm.errorNYI(expr->getSourceRange(),
-                 std::string("unimplemented AMDGPU builtin call: ") +
-                     getContext().BuiltinInfo.getName(builtinId));
-    return mlir::Value{};
+    unsigned index =
+        builtinId == AMDGPU::BI__builtin_amdgcn_grid_size_x   ? 0
+        : builtinId == AMDGPU::BI__builtin_amdgcn_grid_size_y ? 1
+                                                               : 2;
+    return emitAMDGPUGridSize(*this, expr, index);
   }
   case AMDGPU::BI__builtin_r600_recipsqrt_ieee:
   case AMDGPU::BI__builtin_r600_recipsqrt_ieeef: {
