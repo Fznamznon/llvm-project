@@ -2625,6 +2625,121 @@ CIRGenFunction::emitX86BuiltinExpr(unsigned builtinID, const CallExpr *expr) {
   case X86::BI__builtin_ia32_cmpordpd:
     return emitVectorFCmp(*this, *expr, ops, cir::CmpOpKind::uno,
                           /*shouldInvert=*/true);
+  case X86::BI__builtin_ia32_roundps:
+  case X86::BI__builtin_ia32_roundpd:
+  case X86::BI__builtin_ia32_roundps256:
+  case X86::BI__builtin_ia32_roundpd256: {
+    mlir::Location loc = getLoc(expr->getExprLoc());
+    mlir::Type resTy = convertType(expr->getType());
+    unsigned m = cast<llvm::APSInt>(
+                     expr->getArg(1)->EvaluateKnownConstInt(getContext()))
+                     .getZExtValue();
+    // Bit 2 (0b100): use MXCSR rounding; bit 3 (0b1000): suppress exception.
+    // If MXCSR rounding is requested OR exception is NOT suppressed, use the
+    // x86 intrinsic (which respects the mode).  Otherwise lower to llvm.round*.
+    bool useMXCSR = m & 0x4;
+    bool suppressExc = m & 0x8;
+    if (useMXCSR || !suppressExc) {
+      StringRef intrinsicName;
+      switch (builtinID) {
+      case X86::BI__builtin_ia32_roundps:
+        intrinsicName = "x86.sse41.round.ps";
+        break;
+      case X86::BI__builtin_ia32_roundps256:
+        intrinsicName = "x86.avx.round.ps.256";
+        break;
+      case X86::BI__builtin_ia32_roundpd:
+        intrinsicName = "x86.sse41.round.pd";
+        break;
+      case X86::BI__builtin_ia32_roundpd256:
+        intrinsicName = "x86.avx.round.pd.256";
+        break;
+      default:
+        llvm_unreachable("unexpected round builtin");
+      }
+      return builder.emitIntrinsicCallOp(loc, intrinsicName, resTy,
+                                         mlir::ValueRange{ops[0], ops[1]});
+    }
+    // Suppress-exception path: lower to the appropriate llvm rounding
+    // intrinsic based on the rounding mode bits [1:0].
+    unsigned roundingMode = m & 0x3;
+    StringRef roundIntrinsic;
+    switch (roundingMode) {
+    case 0: roundIntrinsic = "llvm.floor"; break; // round toward -inf
+    case 1: roundIntrinsic = "llvm.ceil";  break; // round toward +inf
+    case 2: roundIntrinsic = "llvm.trunc"; break; // round toward zero
+    case 3: roundIntrinsic = "llvm.round"; break; // round to nearest
+    default: llvm_unreachable("invalid rounding mode");
+    }
+    return builder.emitIntrinsicCallOp(loc, roundIntrinsic, resTy,
+                                       mlir::ValueRange{ops[0]});
+  }
+  case X86::BI__builtin_ia32_cmpps:
+  case X86::BI__builtin_ia32_cmpps256:
+  case X86::BI__builtin_ia32_cmppd:
+  case X86::BI__builtin_ia32_cmppd256: {
+    // Map the immediate predicate [0,31] to an fcmp predicate.
+    // Predicates 16-31 are signalling variants of 0-15; signalling behaviour
+    // is ignored here (same as classic codegen in non-strict FP mode).
+    unsigned cc =
+        cast<llvm::APSInt>(
+            expr->getArg(2)->EvaluateKnownConstInt(getContext()))
+            .getZExtValue() &
+        0x1f;
+    unsigned baseCC = cc & 0xf;
+    // For TRUE/FALSE predicates and ORD/UNO fall back to the x86 intrinsic.
+    // TRUE (0xf) and FALSE (0xb) have no direct fcmp equivalent.
+    // ORD (0x07) is `uno` inverted which emitVectorFCmp handles, but we
+    // also handle UNO (0x03) and ORD (0x07) via the intrinsic path to keep
+    // things simple.
+    bool needsIntrinsic = (baseCC == 0x07 || baseCC == 0x0b || baseCC == 0x0f);
+    if (needsIntrinsic) {
+      StringRef intrinsicName;
+      switch (builtinID) {
+      case X86::BI__builtin_ia32_cmpps:
+        intrinsicName = "x86.sse.cmp.ps";
+        break;
+      case X86::BI__builtin_ia32_cmpps256:
+        intrinsicName = "x86.avx.cmp.ps.256";
+        break;
+      case X86::BI__builtin_ia32_cmppd:
+        intrinsicName = "x86.sse2.cmp.pd";
+        break;
+      case X86::BI__builtin_ia32_cmppd256:
+        intrinsicName = "x86.avx.cmp.pd.256";
+        break;
+      default:
+        llvm_unreachable("unexpected cmp builtin");
+      }
+      mlir::Type resTy = convertType(expr->getType());
+      mlir::Location loc = getLoc(expr->getExprLoc());
+      return builder.emitIntrinsicCallOp(loc, intrinsicName, resTy,
+                                         mlir::ValueRange{ops[0], ops[1], ops[2]});
+    }
+    // Map baseCC to (pred, shouldInvert).
+    // CmpOpKind values: lt=0, le=1, gt=2, ge=3, eq=4, ne=5, one=6, uno=7
+    struct PredEntry { cir::CmpOpKind pred; bool invert; };
+    static const PredEntry predTable[16] = {
+        {cir::CmpOpKind::eq,  false}, // 0x00 OEQ
+        {cir::CmpOpKind::lt,  false}, // 0x01 OLT
+        {cir::CmpOpKind::le,  false}, // 0x02 OLE
+        {cir::CmpOpKind::uno, false}, // 0x03 UNO
+        {cir::CmpOpKind::ne,  false}, // 0x04 UNE
+        {cir::CmpOpKind::lt,  true},  // 0x05 UGE (OLT inverted)
+        {cir::CmpOpKind::le,  true},  // 0x06 UGT (OLE inverted)
+        {cir::CmpOpKind::uno, false}, // 0x07 ORD -- handled above
+        {cir::CmpOpKind::eq,  false}, // 0x08 UEQ
+        {cir::CmpOpKind::lt,  false}, // 0x09 ULT
+        {cir::CmpOpKind::le,  false}, // 0x0a ULE
+        {cir::CmpOpKind::eq,  false}, // 0x0b FALSE -- handled above
+        {cir::CmpOpKind::one, false}, // 0x0c ONE
+        {cir::CmpOpKind::ge,  false}, // 0x0d OGE
+        {cir::CmpOpKind::gt,  false}, // 0x0e OGT
+        {cir::CmpOpKind::eq,  false}, // 0x0f TRUE -- handled above
+    };
+    return emitVectorFCmp(*this, *expr, ops, predTable[baseCC].pred,
+                          predTable[baseCC].invert);
+  }
   case X86::BI__builtin_ia32_cmpph128_mask:
   case X86::BI__builtin_ia32_cmpph256_mask:
   case X86::BI__builtin_ia32_cmpph512_mask:
@@ -2637,10 +2752,6 @@ CIRGenFunction::emitX86BuiltinExpr(unsigned builtinID, const CallExpr *expr) {
   case X86::BI__builtin_ia32_vcmpbf16512_mask:
   case X86::BI__builtin_ia32_vcmpbf16256_mask:
   case X86::BI__builtin_ia32_vcmpbf16128_mask:
-  case X86::BI__builtin_ia32_cmpps:
-  case X86::BI__builtin_ia32_cmpps256:
-  case X86::BI__builtin_ia32_cmppd:
-  case X86::BI__builtin_ia32_cmppd256:
   case X86::BI__builtin_ia32_cmpeqss:
   case X86::BI__builtin_ia32_cmpltss:
   case X86::BI__builtin_ia32_cmpless:
