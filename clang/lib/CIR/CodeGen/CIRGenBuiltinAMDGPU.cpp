@@ -326,10 +326,72 @@ CIRGenFunction::emitAMDGPUBuiltinExpr(unsigned builtinId,
   case AMDGPU::BI__builtin_amdgcn_mov_dpp8:
   case AMDGPU::BI__builtin_amdgcn_mov_dpp:
   case AMDGPU::BI__builtin_amdgcn_update_dpp: {
-    cgm.errorNYI(expr->getSourceRange(),
-                 std::string("unimplemented AMDGPU builtin call: ") +
-                     getContext().BuiltinInfo.getName(builtinId));
-    return mlir::Value{};
+    mlir::Location loc = getLoc(expr->getExprLoc());
+    CIRGenBuilderTy &builder = getBuilder();
+
+    // Determine ICE arguments (compile-time integer constants).
+    unsigned iceArguments = 0;
+    ASTContext::GetBuiltinTypeError error;
+    getContext().GetBuiltinType(builtinId, error, &iceArguments);
+    assert(error == ASTContext::GE_None);
+
+    // Data type of the first argument. Use the ASTContext to get the size in
+    // bits, which works for any type including vectors and structs.
+    mlir::Type dataTy = convertType(expr->getArg(0)->getType());
+    unsigned sizeBits = static_cast<unsigned>(
+        getContext().getTypeSize(expr->getArg(0)->getType()));
+    // Work in at least i32.
+    unsigned workBits = std::max(sizeBits, 32u);
+    mlir::Type workTy = builder.getUIntNTy(workBits);
+
+    bool isDpp8 = builtinId == AMDGPU::BI__builtin_amdgcn_mov_dpp8;
+    bool isMovDpp = builtinId == AMDGPU::BI__builtin_amdgcn_mov_dpp;
+    // mov_dpp is sugar for update_dpp with a poison first arg.
+    llvm::StringRef intrinsicName =
+        isDpp8 ? "amdgcn.mov.dpp8" : "amdgcn.update.dpp";
+
+    llvm::SmallVector<mlir::Value, 7> args;
+
+    // mov_dpp prepends an undef value as the "old" operand.
+    if (isMovDpp)
+      args.push_back(getUndefConstant(loc, workTy));
+
+    // Number of "data" args that may need bitcast+zext (first 1 or 2 args).
+    unsigned numDataArgs =
+        (builtinId == AMDGPU::BI__builtin_amdgcn_update_dpp) ? 2u : 1u;
+
+    for (unsigned i = 0, n = expr->getNumArgs(); i < n; ++i) {
+      // Data args are runtime values; only use const-fold for ICE args.
+      mlir::Value v = (i < numDataArgs)
+                          ? emitScalarExpr(expr->getArg(i))
+                          : emitScalarOrConstFoldImmArg(iceArguments, i,
+                                                        expr->getArg(i));
+      if (i < numDataArgs && sizeBits < 32) {
+        // Bitcast to iN if needed, then zero-extend to i32.
+        mlir::Type uintNTy = builder.getUIntNTy(sizeBits);
+        if (v.getType() != uintNTy)
+          v = builder.createBitcast(v, uintNTy);
+        v = cir::CastOp::create(builder, loc, workTy, cir::CastKind::integral,
+                                 v);
+      }
+      args.push_back(v);
+    }
+
+    mlir::Value result =
+        cir::LLVMIntrinsicCallOp::create(builder, loc,
+                                         builder.getStringAttr(intrinsicName),
+                                         workTy, args)
+            .getResult();
+
+    // Truncate back to the original size if needed.
+    if (sizeBits < 32) {
+      mlir::Type truncTy = builder.getUIntNTy(sizeBits);
+      result = cir::CastOp::create(builder, loc, truncTy,
+                                   cir::CastKind::integral, result);
+      if (!mlir::isa<cir::IntType>(dataTy))
+        result = builder.createBitcast(result, dataTy);
+    }
+    return result;
   }
   case AMDGPU::BI__builtin_amdgcn_permlane16:
   case AMDGPU::BI__builtin_amdgcn_permlanex16: {
