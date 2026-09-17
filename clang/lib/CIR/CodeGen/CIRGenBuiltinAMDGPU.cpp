@@ -965,9 +965,35 @@ CIRGenFunction::emitAMDGPUBuiltinExpr(unsigned builtinId,
     return mlir::Value{};
   }
   case AMDGPU::BI__builtin_amdgcn_fence: {
-    cgm.errorNYI(expr->getSourceRange(),
-                 std::string("unimplemented AMDGPU builtin call: ") +
-                     getContext().BuiltinInfo.getName(builtinId));
+    // arg0: memory ordering (C11 __ATOMIC_* constant)
+    // arg1: scope as a string literal ("singlethread", "wavefront",
+    //        "workgroup", "agent", "system", "")
+    mlir::Location loc = getLoc(expr->getSourceRange());
+
+    // arg1 is always a string literal constant.
+    StringRef scopeStr =
+        cast<clang::StringLiteral>(expr->getArg(1)->IgnoreParenCasts())
+            ->getString();
+
+    // Map AMDGPU scope string to CIR SyncScopeKind.
+    cir::SyncScopeKind scopeKind =
+        llvm::StringSwitch<cir::SyncScopeKind>(scopeStr)
+            .Case("singlethread", cir::SyncScopeKind::HIPSingleThread)
+            .Case("wavefront", cir::SyncScopeKind::HIPWavefront)
+            .Case("workgroup", cir::SyncScopeKind::HIPWorkgroup)
+            .Case("agent", cir::SyncScopeKind::HIPAgent)
+            .Case("", cir::SyncScopeKind::HIPSystem)
+            .Default(cir::SyncScopeKind::HIPSystem);
+
+    auto scopeAttr =
+        cir::SyncScopeKindAttr::get(&getMLIRContext(), scopeKind);
+
+    auto emitFence = [&](cir::MemOrder memOrder) {
+      cir::AtomicFenceOp::create(builder, loc, memOrder, scopeAttr);
+    };
+
+    emitAtomicExprWithMemOrder(expr->getArg(0), /*isStore=*/false,
+                               /*isLoad=*/false, /*isFence=*/true, emitFence);
     return mlir::Value{};
   }
   case AMDGPU::BI__builtin_amdgcn_atomic_inc32:
