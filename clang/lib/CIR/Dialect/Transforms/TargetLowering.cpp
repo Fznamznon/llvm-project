@@ -20,6 +20,7 @@
 #include "clang/CIR/Dialect/IR/CIRDialect.h"
 #include "clang/CIR/Dialect/IR/CIRTypes.h"
 #include "clang/CIR/Dialect/Passes.h"
+#include "clang/CIR/Dialect/Transforms/CIRTransformUtils.h"
 
 using namespace mlir;
 using namespace cir;
@@ -320,7 +321,18 @@ void TargetLoweringPass::runOnOperation() {
   mlir::ConversionTarget target(*mod.getContext());
   populateTargetLoweringConversionTarget(target, typeConverter);
 
-  if (failed(mlir::applyPartialConversion(mod, target, std::move(patterns))))
+  // applyPartialConversion walks ops using ForwardDominanceIterator, which
+  // skips unreachable blocks. Values defined in reachable blocks (e.g.
+  // allocas) still get their types converted, leaving source-materialization
+  // casts for any users in dead blocks. Those dead-block users are never
+  // visited, so the casts remain live and the conversion fails. Fix: include
+  // the unreachable-block ops explicitly in the conversion roots, just as
+  // CXXABILowering and LowerToLLVM do.
+  llvm::SmallVector<mlir::Operation *> ops;
+  ops.push_back(mod);
+  cir::collectUnreachable(mod, ops);
+
+  if (failed(mlir::applyPartialConversion(ops, target, std::move(patterns))))
     signalPassFailure();
 }
 
