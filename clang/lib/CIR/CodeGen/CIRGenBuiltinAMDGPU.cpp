@@ -1177,18 +1177,42 @@ CIRGenFunction::emitAMDGPUBuiltinExpr(unsigned builtinId,
                                /*isLoad=*/false, /*isFence=*/true, emitFence);
     return mlir::Value{};
   }
+  case AMDGPU::BI__builtin_amdgcn_ds_atomic_fadd_f32: {
+    // DS (local) float atomic add. Scope is workgroup; no fine-grained-memory
+    // metadata is needed for local address space.
+    Address ptr = emitPointerWithAlignment(expr->getArg(0));
+    mlir::Value val = emitScalarExpr(expr->getArg(1));
+    auto rmw = cir::AtomicFetchOp::create(
+        builder, getLoc(expr->getSourceRange()), ptr.emitRawPointer(), val,
+        cir::AtomicFetchKind::Add, cir::MemOrder::Relaxed,
+        cir::SyncScopeKind::HIPWorkgroup, /*is_volatile=*/false,
+        /*fetch_first=*/true);
+    return rmw->getResult(0);
+  }
+  case AMDGPU::BI__builtin_amdgcn_global_atomic_fadd_f32: {
+    // Global float atomic add. Scope is agent (device); the backend needs
+    // "amdgpu.no.fine.grained.memory" and "atomic.ignore.denormal.mode"
+    // metadata to emit the native instruction, but those are not yet modelled
+    // in CIR and are added by the backend when the scope is Device.
+    Address ptr = emitPointerWithAlignment(expr->getArg(0));
+    mlir::Value val = emitScalarExpr(expr->getArg(1));
+    auto rmw = cir::AtomicFetchOp::create(
+        builder, getLoc(expr->getSourceRange()), ptr.emitRawPointer(), val,
+        cir::AtomicFetchKind::Add, cir::MemOrder::Relaxed,
+        cir::SyncScopeKind::HIPAgent, /*is_volatile=*/false,
+        /*fetch_first=*/true);
+    return rmw->getResult(0);
+  }
   case AMDGPU::BI__builtin_amdgcn_atomic_inc32:
   case AMDGPU::BI__builtin_amdgcn_atomic_inc64:
   case AMDGPU::BI__builtin_amdgcn_atomic_dec32:
   case AMDGPU::BI__builtin_amdgcn_atomic_dec64:
   case AMDGPU::BI__builtin_amdgcn_ds_atomic_fadd_f64:
-  case AMDGPU::BI__builtin_amdgcn_ds_atomic_fadd_f32:
   case AMDGPU::BI__builtin_amdgcn_ds_atomic_fadd_v2f16:
   case AMDGPU::BI__builtin_amdgcn_ds_atomic_fadd_v2bf16:
   case AMDGPU::BI__builtin_amdgcn_ds_faddf:
   case AMDGPU::BI__builtin_amdgcn_ds_fminf:
   case AMDGPU::BI__builtin_amdgcn_ds_fmaxf:
-  case AMDGPU::BI__builtin_amdgcn_global_atomic_fadd_f32:
   case AMDGPU::BI__builtin_amdgcn_global_atomic_fadd_f64:
   case AMDGPU::BI__builtin_amdgcn_global_atomic_fadd_v2f16:
   case AMDGPU::BI__builtin_amdgcn_flat_atomic_fadd_v2f16:
