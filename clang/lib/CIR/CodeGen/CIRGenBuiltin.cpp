@@ -2334,8 +2334,48 @@ RValue CIRGenFunction::emitBuiltinExpr(const GlobalDecl &gd, unsigned builtinID,
   case Builtin::BI__builtin_memcpy:
   case Builtin::BImempcpy:
   case Builtin::BI__builtin_mempcpy:
-  case Builtin::BI__builtin_memcpy_inline:
-  case Builtin::BI__builtin___memcpy_chk:
+  case Builtin::BI__builtin_memcpy_inline: {
+    mlir::Location loc = getLoc(e->getSourceRange());
+    Address dest = emitPointerWithAlignment(e->getArg(0));
+    Address src = emitPointerWithAlignment(e->getArg(1));
+    mlir::Value sizeVal = emitScalarExpr(e->getArg(2));
+    Address destCast = dest.withElementType(builder, cgm.voidTy);
+    Address srcCast = src.withElementType(builder, cgm.voidTy);
+    assert(!cir::MissingFeatures::sanitizers());
+    builder.createMemCpy(loc, destCast.getPointer(), srcCast.getPointer(),
+                         sizeVal);
+    if (builtinID == Builtin::BImempcpy ||
+        builtinID == Builtin::BI__builtin_mempcpy) {
+      // mempcpy returns a pointer past the end of the destination.
+      mlir::Value destPtr = destCast.getPointer();
+      mlir::Value end =
+          builder.createPtrStride(loc, destPtr, sizeVal);
+      return RValue::get(end);
+    }
+    return RValue::get(dest.getPointer());
+  }
+  case Builtin::BI__builtin___memcpy_chk: {
+    // fold __builtin_memcpy_chk(dst, src, size, dstSize) to memcpy iff
+    // size <= dstSize is known at compile time.
+    Expr::EvalResult sizeResult, dstSizeResult;
+    if (!e->getArg(2)->EvaluateAsInt(sizeResult, getContext()) ||
+        !e->getArg(3)->EvaluateAsInt(dstSizeResult, getContext()))
+      break;
+    llvm::APSInt size = sizeResult.Val.getInt();
+    llvm::APSInt dstSize = dstSizeResult.Val.getInt();
+    if (size.ugt(dstSize))
+      break;
+    mlir::Location loc = getLoc(e->getSourceRange());
+    Address dest = emitPointerWithAlignment(e->getArg(0));
+    Address src = emitPointerWithAlignment(e->getArg(1));
+    mlir::Value sizeVal = builder.getConstInt(
+        loc, convertType(getContext().getSizeType()), size.getZExtValue());
+    Address destCast = dest.withElementType(builder, cgm.voidTy);
+    Address srcCast = src.withElementType(builder, cgm.voidTy);
+    builder.createMemCpy(loc, destCast.getPointer(), srcCast.getPointer(),
+                         sizeVal);
+    return RValue::get(dest.getPointer());
+  }
   case Builtin::BI__builtin_objc_memmove_collectable:
   case Builtin::BI__builtin___memmove_chk:
   case Builtin::BI__builtin_trivially_relocate:
