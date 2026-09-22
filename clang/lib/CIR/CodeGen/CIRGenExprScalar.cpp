@@ -2902,15 +2902,28 @@ mlir::Value ScalarExprEmitter::VisitInitListExpr(InitListExpr *e) {
 
     SmallVector<mlir::Value, 16> elements;
     for (Expr *init : e->inits()) {
-      elements.push_back(Visit(init));
+      mlir::Value initVal = Visit(init);
+      // A vector-typed initializer (whole vector or multi-element swizzle) must
+      // be unpacked into scalars because VecCreateOp only accepts scalar
+      // operands.
+      if (auto subVecTy =
+              mlir::dyn_cast<cir::VectorType>(initVal.getType())) {
+        uint64_t remaining = vectorType.getSize() - elements.size();
+        uint64_t toCopy = std::min(subVecTy.getSize(), remaining);
+        for (uint64_t i = 0; i < toCopy; ++i)
+          elements.push_back(cgf.getBuilder().createExtractElement(
+              cgf.getLoc(e->getSourceRange()), initVal, i));
+      } else {
+        elements.push_back(initVal);
+      }
     }
 
     // Zero-initialize any remaining values.
-    if (numInitElements < vectorType.getSize()) {
+    if (elements.size() < vectorType.getSize()) {
       const mlir::Value zeroValue = cgf.getBuilder().getNullValue(
           vectorType.getElementType(), cgf.getLoc(e->getSourceRange()));
       std::fill_n(std::back_inserter(elements),
-                  vectorType.getSize() - numInitElements, zeroValue);
+                  vectorType.getSize() - elements.size(), zeroValue);
     }
 
     return cir::VecCreateOp::create(cgf.getBuilder(),
