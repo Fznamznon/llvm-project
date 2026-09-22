@@ -2826,11 +2826,25 @@ mlir::LogicalResult CIRToLLVMFuncOpLowering::matchAndRewrite(
       fn.setNoUnwind(true);
       fn.setWillReturn(true);
       break;
-    case cir::SideEffect::Const:
+    case cir::SideEffect::Const: {
+      // If any argument is an sret (writable hidden return pointer), the
+      // function must write through it. Upgrade argMem to ModRef so that
+      // memory(none) and writable do not conflict in LLVM IR — matching what
+      // OGCG's AddPotentialArgAccess() does for Indirect/sret args.
+      std::optional<mlir::ArrayAttr> argAttrs = op.getArgAttrs();
+      bool hasSRetArg =
+          argAttrs && llvm::any_of(*argAttrs, [](mlir::Attribute a) {
+            auto dict = mlir::dyn_cast_or_null<mlir::DictionaryAttr>(a);
+            return dict &&
+                   dict.get(mlir::LLVM::LLVMDialect::getStructRetAttrName());
+          });
+      mlir::LLVM::ModRefInfo argMemInfo = hasSRetArg
+                                              ? mlir::LLVM::ModRefInfo::ModRef
+                                              : mlir::LLVM::ModRefInfo::NoModRef;
       fn.setMemoryEffectsAttr(mlir::LLVM::MemoryEffectsAttr::get(
           fn.getContext(),
           /*other=*/mlir::LLVM::ModRefInfo::NoModRef,
-          /*argMem=*/mlir::LLVM::ModRefInfo::NoModRef,
+          /*argMem=*/argMemInfo,
           /*inaccessibleMem=*/mlir::LLVM::ModRefInfo::NoModRef,
           /*errnoMem=*/mlir::LLVM::ModRefInfo::NoModRef,
           /*targetMem0=*/mlir::LLVM::ModRefInfo::NoModRef,
@@ -2838,6 +2852,7 @@ mlir::LogicalResult CIRToLLVMFuncOpLowering::matchAndRewrite(
       fn.setNoUnwind(true);
       fn.setWillReturn(true);
       break;
+    }
     }
   }
 
