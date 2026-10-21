@@ -179,6 +179,32 @@ bool CIRGenOpenMPRuntime::hasRequiresUnifiedSharedMemory() const {
   return cgm.getLangOpts().OpenMPForceUSM;
 }
 
+// Mirrors CGOpenMPRuntime::registerTargetGlobalVariable.
+void CIRGenOpenMPRuntime::registerTargetGlobalVariable(const VarDecl *vd) {
+  if (cgm.getLangOpts().OMPTargetTriples.empty() &&
+      !cgm.getLangOpts().OpenMPIsTargetDevice)
+    return;
+
+  std::optional<OMPDeclareTargetDeclAttr::MapTypeTy> res =
+      OMPDeclareTargetDeclAttr::isDeclareTargetDeclaration(vd);
+
+  if (res && *res != OMPDeclareTargetDeclAttr::MT_Link &&
+      vd->hasExternalStorage())
+    return;
+
+  if (res && *res == OMPDeclareTargetDeclAttr::MT_Local)
+    return;
+
+  if (!res) {
+    // OGCG records non-target variables emitted in device code.
+    assert(!cir::MissingFeatures::openMP());
+    return;
+  }
+
+  cgm.errorNYI(vd->getSourceRange(),
+               "registerTargetGlobalVariable: declare target variable");
+}
+
 void CIRGenOpenMPRuntime::emitDeclareTargetFunction(const FunctionDecl *fd,
                                                     cir::FuncOp funcOp) {
   const auto *attr = fd->getAttr<OMPDeclareTargetDeclAttr>();

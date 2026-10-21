@@ -51,6 +51,9 @@ public:
   /// Return whether unified shared memory is required.
   bool hasRequiresUnifiedSharedMemory() const;
 
+  /// Register a global variable that may need an offload entry.
+  void registerTargetGlobalVariable(const VarDecl *vd);
+
   /// If the function has an OMPDeclareTargetDeclAttr, set the corresponding
   /// omp.declare_target attribute on the emitted cir.func op.
   void emitDeclareTargetFunction(const FunctionDecl *fd, cir::FuncOp funcOp);
