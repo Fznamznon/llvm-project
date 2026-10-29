@@ -52,6 +52,10 @@ public:
 
   bool emitProcBind(mlir::omp::ProcBindClauseOps &result) const;
 
+  /// Emit a schedule clause. Any chunk size is evaluated at the current
+  /// insertion point. Returns failure if emission failed.
+  mlir::LogicalResult emitSchedule(mlir::omp::ScheduleClauseOps &result) const;
+
   /// Verify the clauses of a directive to make sure all legal cases are either
   /// implemented or give a NYI error. The \p SupportedClauses and \p
   /// NYIClauses type lists must be disjoint and cover all clauses eligible for

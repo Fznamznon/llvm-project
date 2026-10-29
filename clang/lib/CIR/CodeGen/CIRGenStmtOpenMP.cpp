@@ -440,11 +440,11 @@ CIRGenFunction::emitOMPForDirective(const OMPForDirective &s) {
                                                s.clauses().end());
   OpenMPClauseEmitter ce(*this, cgm, builder, begin, clauses);
   if (mlir::failed(ce.emitNYI</*supported=*/OMPPrivateClause, OMPCollapseClause,
-                              OMPNowaitClause>(
+                              OMPNowaitClause, OMPScheduleClause>(
           /*nyi=*/OpenMPNYIClauseList<OMPAllocateClause, OMPFirstprivateClause,
                                       OMPLastprivateClause, OMPLinearClause,
                                       OMPOrderClause, OMPOrderedClause,
-                                      OMPReductionClause, OMPScheduleClause>{},
+                                      OMPReductionClause>{},
           llvm::omp::Directive::OMPD_for)))
     return mlir::failure();
 
@@ -557,6 +557,10 @@ CIRGenFunction::emitOMPForDirective(const OMPForDirective &s) {
           builtinIVTy);
 
       mlir::omp::WsloopOperands wsOps;
+      if (mlir::failed(ce.emitSchedule(wsOps))) {
+        res = mlir::failure();
+        return;
+      }
       wsOps.nowait = s.getSingleClause<OMPNowaitClause>() ? builder.getUnitAttr()
                                                           : mlir::UnitAttr();
       auto wsloop = mlir::omp::WsloopOp::create(builder, loopLoc, wsOps);

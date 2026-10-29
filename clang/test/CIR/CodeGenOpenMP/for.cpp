@@ -42,11 +42,39 @@ void for_collapse(int n) {
   // CHECK: omp.loop_nest
 }
 
-#ifdef NYI
-void for_schedule(int n) {
-  // nyi-error@+1 {{ClangIR code gen Not Yet Implemented: OpenMP FOR 'schedule' clause}}
+void for_schedule(int *a, int n, int chunk) {
+  // CHECK-LABEL: cir.func{{.*}}@_Z12for_schedulePiii
+#pragma omp parallel
+  {
 #pragma omp for schedule(static)
+    for (int i = 0; i < n; ++i)
+      a[i] = i;
+    // CHECK: omp.wsloop schedule(static) {
+
+#pragma omp for schedule(dynamic, 4)
+    for (int i = 0; i < n; ++i)
+      a[i] = i;
+    // CHECK: omp.wsloop schedule(dynamic = %{{.*}} : i32) {
+
+#pragma omp for schedule(nonmonotonic: guided, chunk)
+    for (int i = 0; i < n; ++i)
+      a[i] = i;
+    // CHECK: omp.wsloop schedule(guided = %{{.*}} : i32, nonmonotonic) {
+
+#pragma omp for schedule(runtime)
+    for (int i = 0; i < n; ++i)
+      a[i] = i;
+    // CHECK: omp.wsloop schedule(runtime) {
+  }
+}
+
+#ifdef NYI
+void for_reduction(int *a, int n) {
+  int s = 0;
+#pragma omp parallel
+  // nyi-error@+1 {{ClangIR code gen Not Yet Implemented: OpenMP FOR 'reduction' clause}}
+#pragma omp for reduction(+ : s)
   for (int i = 0; i < n; ++i)
-    use(i);
+    s += a[i];
 }
 #endif

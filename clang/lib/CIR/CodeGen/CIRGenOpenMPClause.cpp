@@ -93,6 +93,77 @@ bool OpenMPClauseEmitter::emitProcBind(
   return false;
 }
 
+mlir::LogicalResult OpenMPClauseEmitter::emitSchedule(
+    mlir::omp::ScheduleClauseOps &result) const {
+  for (const OMPClause *clause : clauses) {
+    const auto *sc = dyn_cast<OMPScheduleClause>(clause);
+    if (!sc)
+      continue;
+
+    mlir::MLIRContext *ctx = builder.getContext();
+    mlir::omp::ClauseScheduleKind kind;
+    switch (sc->getScheduleKind()) {
+    case OMPC_SCHEDULE_static:
+      kind = mlir::omp::ClauseScheduleKind::Static;
+      break;
+    case OMPC_SCHEDULE_dynamic:
+      kind = mlir::omp::ClauseScheduleKind::Dynamic;
+      break;
+    case OMPC_SCHEDULE_guided:
+      kind = mlir::omp::ClauseScheduleKind::Guided;
+      break;
+    case OMPC_SCHEDULE_auto:
+      kind = mlir::omp::ClauseScheduleKind::Auto;
+      break;
+    case OMPC_SCHEDULE_runtime:
+      kind = mlir::omp::ClauseScheduleKind::Runtime;
+      break;
+    case OMPC_SCHEDULE_unknown:
+      llvm_unreachable("unknown schedule kind survived Sema");
+    }
+    result.scheduleKind = mlir::omp::ClauseScheduleKindAttr::get(ctx, kind);
+
+    // There can be up to two modifiers: an ordering one and 'simd'.
+    for (OpenMPScheduleClauseModifier mod :
+         {sc->getFirstScheduleModifier(), sc->getSecondScheduleModifier()}) {
+      switch (mod) {
+      case OMPC_SCHEDULE_MODIFIER_monotonic:
+        result.scheduleMod = mlir::omp::ScheduleModifierAttr::get(
+            ctx, mlir::omp::ScheduleModifier::monotonic);
+        break;
+      case OMPC_SCHEDULE_MODIFIER_nonmonotonic:
+        result.scheduleMod = mlir::omp::ScheduleModifierAttr::get(
+            ctx, mlir::omp::ScheduleModifier::nonmonotonic);
+        break;
+      case OMPC_SCHEDULE_MODIFIER_simd:
+        result.scheduleSimd = builder.getUnitAttr();
+        break;
+      case OMPC_SCHEDULE_MODIFIER_last:
+      case OMPC_SCHEDULE_MODIFIER_unknown:
+        break;
+      }
+    }
+
+    // A chunk size that isn't a constant is captured by a helper variable.
+    if (const Stmt *preInit = sc->getPreInitStmt()) {
+      if (const auto *declStmt = dyn_cast<DeclStmt>(preInit))
+        for (const Decl *d : declStmt->decls())
+          cgf.emitVarDecl(*cast<VarDecl>(d));
+      else if (mlir::failed(cgf.emitStmt(preInit, /*useCurrentScope=*/true)))
+        return mlir::failure();
+    }
+
+    if (const Expr *chunk = sc->getChunkSize()) {
+      mlir::Value chunkVal = cgf.emitScalarExpr(chunk);
+      auto cirTy = mlir::cast<cir::IntType>(chunkVal.getType());
+      result.scheduleChunk = builder.createBuiltinIntCast(
+          chunkVal, builder.getIntegerType(cirTy.getWidth()));
+    }
+    return mlir::success();
+  }
+  return mlir::success();
+}
+
 bool OpenMPClauseEmitter::emitNumThreads(
     mlir::omp::NumThreadsClauseOps &result) const {
   for (const OMPClause *clause : clauses) {
