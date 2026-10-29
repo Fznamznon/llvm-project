@@ -458,9 +458,13 @@ CIRGenFunction::emitOMPForDirective(const OMPForDirective &s) {
 
   const auto *ivDecl =
       cast<VarDecl>(cast<DeclRefExpr>(s.getIterationVariable())->getDecl());
-  if (!ivDecl->getType()->isSignedIntegerType()) {
-    cgm.errorNYI(s.getSourceRange(), "OpenMP for with an unsigned iteration "
-                                     "variable");
+  // The omp dialect only has signed loops. An unsigned iteration variable is
+  // widened to a signed 64-bit loop, which has room for all of its values; a
+  // 64-bit one has nothing to widen to.
+  if (!ivDecl->getType()->isSignedIntegerType() &&
+      getContext().getTypeSize(ivDecl->getType()) >= 64) {
+    cgm.errorNYI(s.getSourceRange(),
+                 "OpenMP for with a 64-bit unsigned iteration variable");
     return mlir::failure();
   }
 
@@ -545,16 +549,17 @@ CIRGenFunction::emitOMPForDirective(const OMPForDirective &s) {
 
       // The iteration space, as builtin integers as the omp dialect wants.
       mlir::Type cirIVTy = convertType(ivDecl->getType());
-      mlir::Type builtinIVTy =
-          builder.getIntegerType(cast<cir::IntType>(cirIVTy).getWidth());
+      cir::IntType loopTy = cast<cir::IntType>(cirIVTy);
+      if (!loopTy.isSigned())
+        loopTy = builder.getSInt64Ty();
+      mlir::Type builtinIVTy = builder.getIntegerType(loopTy.getWidth());
       mlir::Value lb = builder.createBuiltinIntCast(
-          builder.getConstInt(loopLoc, cast<cir::IntType>(cirIVTy), 0),
-          builtinIVTy);
+          builder.getConstInt(loopLoc, loopTy, 0), builtinIVTy);
       mlir::Value ub = builder.createBuiltinIntCast(
-          emitScalarExpr(s.getLastIteration()), builtinIVTy);
-      mlir::Value step = builder.createBuiltinIntCast(
-          builder.getConstInt(loopLoc, cast<cir::IntType>(cirIVTy), 1),
+          builder.createIntCast(emitScalarExpr(s.getLastIteration()), loopTy),
           builtinIVTy);
+      mlir::Value step = builder.createBuiltinIntCast(
+          builder.getConstInt(loopLoc, loopTy, 1), builtinIVTy);
 
       mlir::omp::WsloopOperands wsOps;
       if (mlir::failed(ce.emitSchedule(wsOps))) {
@@ -585,7 +590,9 @@ CIRGenFunction::emitOMPForDirective(const OMPForDirective &s) {
 
         // Make the iteration variable hold the value of this iteration, then
         // derive the counters of this iteration from it.
-        builder.createStore(loopLoc, builder.createBuiltinIntCast(ivArg, cirIVTy),
+        mlir::Value iv = builder.createIntCast(
+            builder.createBuiltinIntCast(ivArg, loopTy), cirIVTy);
+        builder.createStore(loopLoc, iv,
                             emitLValue(s.getIterationVariable()).getAddress());
         for (const Expr *update : s.updates())
           emitIgnoredExpr(update);

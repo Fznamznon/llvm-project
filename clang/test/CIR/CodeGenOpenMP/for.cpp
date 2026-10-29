@@ -68,6 +68,19 @@ void for_schedule(int *a, int n, int chunk) {
   }
 }
 
+void for_unsigned(unsigned n) {
+  // CHECK-LABEL: cir.func{{.*}}@_Z12for_unsignedj
+#pragma omp parallel
+#pragma omp for
+  for (unsigned i = 0; i < n; ++i)
+    use(i);
+  // The loop runs over a signed 64-bit space, so that no value is lost.
+  // CHECK: omp.wsloop {
+  // CHECK: omp.loop_nest (%{{.*}}) : i64 =
+  // CHECK: cir.builtin_int_cast %{{.*}} : i64 -> !s64i
+  // CHECK: cir.cast integral %{{.*}} : !s64i -> !u32i
+}
+
 #ifdef NYI
 void for_reduction(int *a, int n) {
   int s = 0;
@@ -76,5 +89,13 @@ void for_reduction(int *a, int n) {
 #pragma omp for reduction(+ : s)
   for (int i = 0; i < n; ++i)
     s += a[i];
+}
+
+void for_unsigned_long(unsigned long n) {
+#pragma omp parallel
+  // nyi-error@+1 {{ClangIR code gen Not Yet Implemented: OpenMP for with a 64-bit unsigned iteration variable}}
+#pragma omp for
+  for (unsigned long i = 0; i < n; ++i)
+    use(i);
 }
 #endif
