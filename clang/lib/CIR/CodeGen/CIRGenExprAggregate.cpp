@@ -1204,6 +1204,16 @@ void AggExprEmitter::visitCXXParenListOrInitListExpr(
 
   LValue destLV = cgf.makeAddrLValue(dest.getAddress(), e->getType());
 
+  // An empty initializer list (which Sema expands to one implicit value
+  // initializer per field) zero-initializes the whole object. Do it with a
+  // single memset so that padding bytes are zeroed too, as classic codegen
+  // does for large objects (see CheckAggExprForMemSetUse).
+  if (llvm::all_of(args, llvm::IsaPred<ImplicitValueInitExpr>) &&
+      !dest.isZeroed() && cgf.getTypes().isZeroInitializable(e->getType())) {
+    cgf.emitNullInitialization(loc, dest.getAddress(), e->getType());
+    return;
+  }
+
   if (record->isUnion()) {
     // Only initialize one field of a union. The field itself is
     // specified by the initializer list.
