@@ -17,9 +17,13 @@
 #include "mlir/Dialect/OpenMP/OpenMPDialect.h"
 #include "clang/AST/OpenMPClause.h"
 #include "clang/AST/StmtOpenMP.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Frontend/OpenMP/OMP.h"
 #include "llvm/Frontend/OpenMP/OMPConstants.h"
+
+#include <list>
 using namespace clang;
 using namespace clang::CIRGen;
 
@@ -159,10 +163,225 @@ CIRGenFunction::emitOMPCanonicalLoop(const OMPCanonicalLoop &s) {
   getCIRGenModule().errorNYI(s.getSourceRange(), "OpenMP OMPCanonicalLoop");
   return mlir::failure();
 }
+/// Emit `#pragma omp simd` the way classic codegen does (emitOMPSimdRegion):
+/// an ordinary counted loop, `cir.for`, over the normalized iteration variable,
+/// carrying vectorization hints. No omp dialect operations are generated.
+///
+///   <pre-inits>
+///   <counter = init>
+///   if (PreCond) {
+///     IV = init; [LastIteration = ...;]
+///     <privatize 'private' clause variables>
+///     for (; IV <= LastIteration; ++IV) { <counter = update(IV)>; BODY; }
+///     <final counter values>
+///   }
+///
+/// Currently only the 'private' and 'collapse' clauses, and rectangular loop
+/// nests, are supported.
 mlir::LogicalResult
 CIRGenFunction::emitOMPSimdDirective(const OMPSimdDirective &s) {
-  getCIRGenModule().errorNYI(s.getSourceRange(), "OpenMP OMPSimdDirective");
-  return mlir::failure();
+  CIRGenModule &cgm = getCIRGenModule();
+  mlir::Location begin = getLoc(s.getBeginLoc());
+  mlir::Location end = getLoc(s.getEndLoc());
+
+  llvm::SmallVector<const OMPClause *> clauses(s.clauses().begin(),
+                                               s.clauses().end());
+  OpenMPClauseEmitter ce(*this, cgm, builder, begin, clauses);
+  if (mlir::failed(ce.emitNYI</*supported=*/OMPPrivateClause,
+                              OMPCollapseClause>(
+          /*nyi=*/OpenMPNYIClauseList<OMPAlignedClause, OMPAllocateClause,
+                                      OMPIfClause, OMPLastprivateClause,
+                                      OMPLinearClause, OMPNontemporalClause,
+                                      OMPOrderClause, OMPReductionClause,
+                                      OMPSafelenClause, OMPSimdlenClause>{},
+          llvm::omp::Directive::OMPD_simd)))
+    return mlir::failure();
+
+  // Non-rectangular loop nests need the dependent counters to be materialized
+  // before the pre-condition is evaluated.
+  for (const Expr *e : s.dependent_counters())
+    if (e) {
+      cgm.errorNYI(s.getSourceRange(), "OpenMP simd with non-rectangular loop");
+      return mlir::failure();
+    }
+  for (const Expr *e : s.finals_conditions())
+    if (e) {
+      cgm.errorNYI(s.getSourceRange(), "OpenMP simd with non-rectangular loop");
+      return mlir::failure();
+    }
+
+  mlir::LogicalResult res = mlir::success();
+
+  // Registrations in localDeclMap that must be undone once the construct has
+  // been emitted. A list, because the RAII object isn't movable.
+  std::list<DeclMapRevertingRAII> privatized;
+
+  // Makes references to \p orig use the storage at \p addr for the lifetime of
+  // this construct.
+  auto privatize = [&](const VarDecl *orig, Address addr) {
+    privatized.emplace_back(*this, orig);
+    replaceAddrOfLocalVar(orig, addr);
+  };
+
+  // Everything the construct declares (captured expressions, the iteration
+  // variable, privatized variables) lives in a scope of its own.
+  auto simdBuilder = [&](mlir::OpBuilder &, mlir::Location scopeLoc) {
+    LexicalScope lexScope{*this, scopeLoc, builder.getInsertionBlock()};
+
+    // Helper variables holding the loop bounds. OMPCapturedExprDecls are
+    // skipped by emitDecl(), so they have to be emitted explicitly.
+    if (const Stmt *preInits = s.getPreInits()) {
+      llvm::SmallVector<const Stmt *> preInitStmts;
+      if (const auto *compound = dyn_cast<CompoundStmt>(preInits))
+        llvm::append_range(preInitStmts, compound->body());
+      else
+        preInitStmts.push_back(preInits);
+      for (const Stmt *preInit : preInitStmts) {
+        if (const auto *declStmt = dyn_cast<DeclStmt>(preInit)) {
+          for (const Decl *d : declStmt->decls())
+            emitVarDecl(*cast<VarDecl>(d));
+          continue;
+        }
+        if (mlir::failed(emitStmt(preInit, /*useCurrentScope=*/true))) {
+          res = mlir::failure();
+          return;
+        }
+      }
+    }
+
+    // The loop counters. A counter declared by the loop itself, as in
+    // `for (int i...)`, has no storage yet: give it the private copy that
+    // Sema made. A counter declared before the loop is used in place, and
+    // gets its final value assigned after the loop (see below).
+    llvm::SmallVector<bool> counterIsOuter;
+    for (auto [counter, privateCounter] :
+         llvm::zip(s.counters(), s.private_counters())) {
+      const auto *vd = cast<VarDecl>(cast<DeclRefExpr>(counter)->getDecl());
+      if (vd->hasGlobalStorage()) {
+        cgm.errorNYI(counter->getSourceRange(),
+                     "OpenMP simd with a global loop counter");
+        res = mlir::failure();
+        return;
+      }
+      bool isOuter = localDeclMap.count(vd);
+      counterIsOuter.push_back(isOuter);
+      if (isOuter)
+        continue;
+      const auto *privateVD =
+          cast<VarDecl>(cast<DeclRefExpr>(privateCounter)->getDecl());
+      privatized.emplace_back(*this, privateVD);
+      AutoVarEmission emission = emitAutoVarAlloca(*privateVD);
+      emitAutoVarCleanups(emission);
+      privatize(vd, emission.getAllocatedAddress());
+    }
+
+    // Initial values of the counters, which the pre-condition is made of.
+    for (const Expr *init : s.inits())
+      emitIgnoredExpr(init);
+
+    auto loopBuilder = [&](mlir::OpBuilder &, mlir::Location loopLoc) {
+      LexicalScope lexScope{*this, loopLoc, builder.getInsertionBlock()};
+
+      // The normalized iteration variable and the iteration count.
+      const auto *ivDecl =
+          cast<VarDecl>(cast<DeclRefExpr>(s.getIterationVariable())->getDecl());
+      emitVarDecl(*ivDecl);
+      emitIgnoredExpr(s.getInit());
+      // If the iteration count isn't a variable, Sema has decided to
+      // recompute it at every use.
+      if (const auto *lastIter = dyn_cast<DeclRefExpr>(s.getLastIteration())) {
+        emitVarDecl(*cast<VarDecl>(lastIter->getDecl()));
+        emitIgnoredExpr(s.getCalcLastIteration());
+      }
+
+      // private(x): each variable gets storage of its own, which is used
+      // instead of the original inside the construct.
+      llvm::SmallPtrSet<const VarDecl *, 4> seen;
+      for (const auto *c : s.getClausesOfKind<OMPPrivateClause>()) {
+        for (auto [ref, copy] : llvm::zip(c->varlist(), c->private_copies())) {
+          const auto *orig =
+              dyn_cast<VarDecl>(cast<DeclRefExpr>(ref)->getDecl());
+          if (!orig) {
+            cgm.errorNYI(ref->getSourceRange(),
+                         "OpenMP simd private clause on a non-variable");
+            res = mlir::failure();
+            return;
+          }
+          if (!seen.insert(orig->getCanonicalDecl()).second)
+            continue;
+          const auto *privateVD =
+              cast<VarDecl>(cast<DeclRefExpr>(copy)->getDecl());
+          privatized.emplace_back(*this, privateVD);
+          AutoVarEmission emission = emitAutoVarAlloca(*privateVD);
+          emitAutoVarInit(emission);
+          emitAutoVarCleanups(emission);
+          privatize(orig, emission.getAllocatedAddress());
+        }
+      }
+
+      // The loop proper.
+      cir::ForOp forOp = builder.createFor(
+          loopLoc,
+          /*condBuilder=*/
+          [&](mlir::OpBuilder &, mlir::Location) {
+            builder.createCondition(evaluateExprAsBool(s.getCond()));
+          },
+          /*bodyBuilder=*/
+          [&](mlir::OpBuilder &, mlir::Location) {
+            RunCleanupsScope bodyScope(*this);
+            // Counters of this iteration, from the iteration variable.
+            for (const Expr *update : s.updates())
+              emitIgnoredExpr(update);
+            if (mlir::failed(emitStmt(s.getBody(), /*useCurrentScope=*/false)))
+              res = mlir::failure();
+            emitStopPoint(&s);
+          },
+          /*stepBuilder=*/
+          [&](mlir::OpBuilder &, mlir::Location stepLoc) {
+            emitIgnoredExpr(s.getInc());
+            builder.createYield(stepLoc);
+          });
+
+      // Iterations may run concurrently (there is no safelen), and the loop is
+      // to be vectorized.
+      mlir::MLIRContext *ctx = &getMLIRContext();
+      mlir::UnitAttr unit = mlir::UnitAttr::get(ctx);
+      auto hints = cir::LoopHintAttr::get(
+          ctx, /*must_progress=*/mlir::UnitAttr(), /*vectorize_enable=*/unit,
+          /*vectorize_width=*/0, /*vectorize_scalable=*/mlir::BoolAttr(),
+          /*vectorize_predicate=*/mlir::BoolAttr(), /*interleave_count=*/0,
+          /*unroll=*/std::nullopt, /*unroll_count=*/0,
+          /*unroll_and_jam=*/std::nullopt, /*unroll_and_jam_count=*/0,
+          /*distribute=*/mlir::BoolAttr(),
+          /*pipeline_disabled=*/mlir::UnitAttr(),
+          /*pipeline_initiation_interval=*/0,
+          /*licm_disabled=*/mlir::UnitAttr(), /*parallel=*/unit,
+          /*code_align=*/0);
+      cir::LoopOpInterface loopOp = forOp;
+      loopOp.setLoopHintsAttr(hints);
+      loopOp.setLoopIdAttr(mlir::DistinctAttr::create(unit));
+      terminateStructuredRegionBody(forOp.getBody(), end);
+
+      // A counter that exists outside of the loop holds, afterwards, the value
+      // it would have after the last iteration.
+      for (auto [isOuter, finalExpr] : llvm::zip(counterIsOuter, s.finals()))
+        if (isOuter)
+          emitIgnoredExpr(finalExpr);
+    };
+
+    // Run the loop only if it iterates at least once, unless that is known.
+    bool preCond = true;
+    if (constantFoldsToBool(s.getPreCond(), preCond)) {
+      if (preCond)
+        loopBuilder(builder, begin);
+      return;
+    }
+    emitIfOnBoolExpr(s.getPreCond(), /*thenBuilder=*/loopBuilder, begin,
+                     /*elseBuilder=*/nullptr);
+  };
+
+  cir::ScopeOp::create(builder, begin, /*scopeBuilder=*/simdBuilder);
+  return res;
 }
 mlir::LogicalResult
 CIRGenFunction::emitOMPTileDirective(const OMPTileDirective &s) {
