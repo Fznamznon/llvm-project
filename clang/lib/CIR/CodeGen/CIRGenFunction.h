@@ -954,6 +954,11 @@ public:
   // same thing as setAddrOfLocalVar.
   void replaceAddrOfLocalVar(const clang::VarDecl *vd, Address addr) {
     localDeclMap.insert_or_assign(vd, addr);
+
+    // Keep the symbol table in sync, as emitDeclRefLValue() expects every
+    // mapped local to be in it.
+    if (!symbolTable.count(vd))
+      symbolTable.insert(vd, addr.getPointer());
   }
 
   // A class to allow reverting changes to a var-decl's registration to the

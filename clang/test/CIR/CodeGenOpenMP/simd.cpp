@@ -14,7 +14,7 @@ void simd_loop(float *a, int n) {
   // The pre-condition guards the loop, which is vectorized and parallel.
   // CHECK: cir.if
   // CHECK: cir.for
-  // CHECK: loop_hints = #cir.loop_hint<vectorize_enable parallel>
+  // CHECK: loop_hints < vectorize_enable parallel>
 }
 
 void simd_private(int *a, int n) {
