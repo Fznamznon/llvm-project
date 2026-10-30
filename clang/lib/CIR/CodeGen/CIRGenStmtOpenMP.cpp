@@ -1560,10 +1560,33 @@ mlir::LogicalResult CIRGenFunction::emitOMPTargetTeamsDistributeDirective(
 mlir::LogicalResult
 CIRGenFunction::emitOMPTargetTeamsDistributeParallelForDirective(
     const OMPTargetTeamsDistributeParallelForDirective &s) {
-  getCIRGenModule().errorNYI(
-      s.getSourceRange(),
-      "OpenMP OMPTargetTeamsDistributeParallelForDirective");
-  return mlir::failure();
+  mlir::Location begin = getLoc(s.getBeginLoc());
+  mlir::Location end = getLoc(s.getEndLoc());
+
+  omp::ConstructQueue queue =
+      omp::buildConstructQueue(getContext().getLangOpts().OpenMP, s);
+  omp::ConstructQueue::const_iterator targetItem = queue.begin();
+  assert(targetItem->id == llvm::omp::OMPD_target &&
+         "expected 'target' to be the outermost leaf");
+
+  if (mlir::failed(checkSynthesizedClauses(*this, s, targetItem)))
+    return mlir::failure();
+
+  mlir::omp::TargetExtOperands targetOps;
+  TargetSyms syms;
+  if (mlir::failed(emitTargetClauses(*this, getCIRGenModule(), builder, begin,
+                                     targetItem->clauses,
+                                     targetItem->firstprivateVars, targetOps,
+                                     syms)))
+    return mlir::failure();
+
+  return emitTargetOp(
+      *this, s, queue, targetItem, begin, end, targetOps, syms,
+      [&]() -> mlir::LogicalResult {
+        return emitTeamsDistributeParallelFor(
+            *this, s, "target teams distribute parallel for", s.hasCancel(),
+            queue, std::next(targetItem));
+      });
 }
 mlir::LogicalResult
 CIRGenFunction::emitOMPTargetTeamsDistributeParallelForSimdDirective(
