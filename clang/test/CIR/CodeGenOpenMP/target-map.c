@@ -102,4 +102,4 @@ void target_map_multiple(int a, int b) {
   }
 }
 
-// TODO: Test implicit mapping. Currently NYI
+// Implicit mapping is tested in target-implicit-map.c

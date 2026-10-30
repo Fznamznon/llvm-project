@@ -230,12 +230,10 @@ bool OpenMPClauseEmitter::emitMap(
                          "'");
     }
 
-    if (mc->isImplicit()) {
-      cgm.errorNYI(mc->getBeginLoc(), "OpenMP implicit map clause");
-      continue;
-    }
-
     mlir::omp::ClauseMapFlags mapFlags = mapClauseKindToFlags(mc->getMapType());
+    // Variables that the region uses, and that can't be passed by copy.
+    if (mc->isImplicit())
+      mapFlags |= mlir::omp::ClauseMapFlags::implicit;
 
     for (const Expr *varExpr : mc->varlist()) {
       const auto *refExpr = dyn_cast<DeclRefExpr>(varExpr->IgnoreImplicit());
