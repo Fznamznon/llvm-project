@@ -22,6 +22,11 @@ namespace clang::CIRGen {
 
 class CIRGenFunction;
 
+/// Create an omp.map.info describing the local variable \p vd.
+mlir::Value emitMapInfoForVar(CIRGenFunction &cgf, mlir::OpBuilder &builder,
+                              mlir::Location loc, const VarDecl *vd,
+                              mlir::omp::ClauseMapFlags mapFlags);
+
 /// A type-only list of OpenMP clause AST node types.
 template <typename... Clauses> struct OpenMPNYIClauseList {};
 

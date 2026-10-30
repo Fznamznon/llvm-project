@@ -37,10 +37,9 @@ mapClauseKindToFlags(OpenMPMapClauseKind kind) {
   }
 }
 
-static mlir::Value emitMapInfoForVar(CIRGenFunction &cgf,
-                                     mlir::OpBuilder &builder,
-                                     mlir::Location loc, const VarDecl *vd,
-                                     mlir::omp::ClauseMapFlags mapFlags) {
+mlir::Value clang::CIRGen::emitMapInfoForVar(
+    CIRGenFunction &cgf, mlir::OpBuilder &builder, mlir::Location loc,
+    const VarDecl *vd, mlir::omp::ClauseMapFlags mapFlags) {
   Address addr = cgf.getAddrOfLocalVar(vd);
   mlir::Value varPtr = addr.getPointer();
   auto varPtrType = mlir::cast<cir::PointerType>(varPtr.getType());

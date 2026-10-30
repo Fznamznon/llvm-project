@@ -291,6 +291,11 @@ struct LeafWithClauses {
   llvm::omp::Directive id = llvm::omp::Directive::OMPD_unknown;
   llvm::SmallVector<const clang::OMPClause *> clauses;
   llvm::SmallVector<llvm::omp::Clause> synthesized;
+  /// Variables of a 'firstprivate' clause that the decomposition synthesized
+  /// for a 'target' leaf (the one given by the user, or the implicit one, is
+  /// moved to other leaves and replaced by a copy). Like \c clauses, it is a
+  /// clause the leaf has to emit.
+  llvm::SmallVector<const clang::VarDecl *> firstprivateVars;
 };
 
 using ConstructQueue = llvm::SmallVector<LeafWithClauses>;
@@ -345,6 +350,24 @@ inline ConstructQueue buildConstructQueue(unsigned openmpVersion,
       if (c.id == llvm::omp::OMPC_if) {
         if (const clang::OMPClause *orig = findOriginalIfClause(s, c)) {
           leaf.clauses.push_back(orig);
+          continue;
+        }
+      }
+      if (c.id == llvm::omp::OMPC_firstprivate &&
+          leaf.id == llvm::omp::OMPD_target) {
+        const auto &fp =
+            std::get<tomp::clause::FirstprivateT<TypeTy, IdTy, ExprTy>>(c.u);
+        bool allVars = true;
+        llvm::SmallVector<const clang::VarDecl *> vars;
+        for (const Object &obj : fp.v) {
+          const auto *vd = llvm::dyn_cast_or_null<clang::VarDecl>(obj.id());
+          if (!vd)
+            allVars = false;
+          else
+            vars.push_back(vd);
+        }
+        if (allVars) {
+          llvm::append_range(leaf.firstprivateVars, vars);
           continue;
         }
       }
