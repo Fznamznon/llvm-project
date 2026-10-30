@@ -27,6 +27,18 @@ mlir::Value emitMapInfoForVar(CIRGenFunction &cgf, mlir::OpBuilder &builder,
                               mlir::Location loc, const VarDecl *vd,
                               mlir::omp::ClauseMapFlags mapFlags);
 
+/// What the map operands of a construct are about.
+struct OpenMPMapSyms {
+  /// The variable of each map operand, in order. Null for the operand that maps
+  /// the object that 'this' points to, which is what mapping a member of it
+  /// comes down to.
+  llvm::SmallVector<const VarDecl *> vars;
+  /// Of the variables, the pointers of which the pointee is mapped rather than
+  /// the pointer itself.
+  llvm::SmallPtrSet<const VarDecl *, 4> pointee;
+  bool mapsThis = false;
+};
+
 /// A type-only list of OpenMP clause AST node types.
 template <typename... Clauses> struct OpenMPNYIClauseList {};
 
@@ -48,14 +60,10 @@ public:
   bool emitIf(mlir::omp::IfClauseOps &result,
               llvm::omp::Directive directiveName) const;
 
-  /// Emit map clauses. The optional \p mapSyms parameter collects the
-  /// VarDecls corresponding to each map operand.
-  /// \p pointeeSyms collects those variables, pointers, of which what they
-  /// point to is mapped rather than they themselves.
+  /// Emit map clauses. The optional \p syms parameter collects what each map
+  /// operand is about.
   bool emitMap(mlir::omp::MapClauseOps &result,
-               llvm::SmallVectorImpl<const VarDecl *> *mapSyms = nullptr,
-               llvm::SmallPtrSetImpl<const VarDecl *> *pointeeSyms =
-                   nullptr) const;
+               OpenMPMapSyms *syms = nullptr) const;
 
   /// Emit is_device_ptr clauses: the pointers are already device addresses, so
   /// they are passed to the region as they are. The optional \p syms collects

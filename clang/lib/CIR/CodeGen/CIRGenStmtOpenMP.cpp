@@ -822,10 +822,7 @@ CIRGenFunction::emitOMPAtomicDirective(const OMPAtomicDirective &s) {
 struct TargetSyms {
   /// is_device_ptr: block arguments before any others.
   llvm::SmallVector<const VarDecl *> deviceAddr;
-  llvm::SmallVector<const VarDecl *> map;
-  /// Of the map variables, the pointers of which the pointee is mapped. The
-  /// region gets a variable of its own holding the device address.
-  llvm::SmallPtrSet<const VarDecl *, 4> pointee;
+  OpenMPMapSyms map;
   /// firstprivate, with the index of the map operand each is initialized from.
   llvm::SmallVector<const VarDecl *> priv;
   llvm::SmallVector<int64_t> privateMaps;
@@ -851,6 +848,9 @@ emitOMPTargetImplicitCaptures(CIRGenFunction &cgf,
   mlir::LogicalResult res = mlir::success();
   for (const auto &capture : cs->captures()) {
     if (capture.capturesThis()) {
+      // The object is mapped, and the region goes by the device address.
+      if (syms.map.mapsThis)
+        continue;
       cgf.getCIRGenModule().errorNYI(s.getBeginLoc(),
                                      "OpenMP target capture of 'this' pointer");
       res = mlir::failure();
@@ -884,7 +884,7 @@ emitOMPTargetImplicitCaptures(CIRGenFunction &cgf,
     }
     if (capture.capturesVariable()) {
       const VarDecl *vd = capture.getCapturedVar();
-      if (llvm::is_contained(syms.map, vd))
+      if (llvm::is_contained(syms.map.vars, vd))
         continue;
 
       cgf.getCIRGenModule().errorNYI(s.getBeginLoc(),
@@ -939,7 +939,7 @@ emitTargetClauses(CIRGenFunction &cgf, CIRGenModule &cgm,
                   mlir::omp::TargetExtOperands &clauseOps, TargetSyms &syms) {
   mlir::LogicalResult res = mlir::success();
   OpenMPClauseEmitter ce(cgf, cgm, builder, loc, clauses);
-  ce.emitMap(clauseOps, &syms.map, &syms.pointee);
+  ce.emitMap(clauseOps, &syms.map);
   ce.emitIsDevicePtr(clauseOps, &syms.deviceAddr);
 
   // firstprivate(x): the target region gets a copy of x, initialized from the
@@ -1021,13 +1021,20 @@ emitTargetOp(CIRGenFunction &cgf, const DirectiveTy &s,
   // stands for it: the device address of is_device_ptr and map variables, and
   // the private copy of firstprivate ones.
   unsigned argIdx = 0;
+  mlir::Value savedThis;
   for (llvm::ArrayRef<const VarDecl *> vds :
-       {llvm::ArrayRef(syms.deviceAddr), llvm::ArrayRef(syms.map)}) {
+       {llvm::ArrayRef(syms.deviceAddr), llvm::ArrayRef(syms.map.vars)}) {
     for (const VarDecl *vd : vds) {
+      mlir::Value blockArg = block.getArgument(argIdx++);
+      if (!vd) {
+        // The object that 'this' points to.
+        savedThis = cgf.cxxThisValue;
+        cgf.cxxThisValue = blockArg;
+        continue;
+      }
       Address origAddr = cgf.getAddrOfLocalVar(vd);
       savedAddrs.push_back({vd, origAddr});
-      mlir::Value blockArg = block.getArgument(argIdx++);
-      if (syms.pointee.contains(vd)) {
+      if (syms.map.pointee.contains(vd)) {
         // The argument is the pointer's value, which the region has to find
         // in a variable.
         mlir::Value var = builder.createAlloca(
@@ -1056,6 +1063,8 @@ emitTargetOp(CIRGenFunction &cgf, const DirectiveTy &s,
 
   for (auto &[vd, addr] : savedAddrs)
     cgf.replaceAddrOfLocalVar(vd, addr);
+  if (syms.map.mapsThis)
+    cgf.cxxThisValue = savedThis;
 
   return res;
 }

@@ -116,10 +116,23 @@ static std::optional<MappedItem> classifyMapItem(const Expr *e) {
   return item;
 }
 
+/// Whether \p e is a member of the object that 'this' points to, or a member
+/// of a member (but not of what a member points to).
+static bool isMemberOfThis(const Expr *e) {
+  const auto *member = dyn_cast<MemberExpr>(e->IgnoreImplicit());
+  while (member) {
+    const Expr *base = member->getBase()->IgnoreImplicit();
+    if (isa<CXXThisExpr>(base))
+      return true;
+    member = dyn_cast<MemberExpr>(base);
+    if (member && member->isArrow())
+      return false;
+  }
+  return false;
+}
+
 bool OpenMPClauseEmitter::emitMap(
-    mlir::omp::MapClauseOps &result,
-    llvm::SmallVectorImpl<const VarDecl *> *mapSyms,
-    llvm::SmallPtrSetImpl<const VarDecl *> *pointeeSyms) const {
+    mlir::omp::MapClauseOps &result, OpenMPMapSyms *syms) const {
   bool found = false;
   for (const OMPClause *clause : clauses) {
     const auto *mc = dyn_cast<OMPMapClause>(clause);
@@ -144,6 +157,23 @@ bool OpenMPClauseEmitter::emitMap(
 
     for (const Expr *varExpr : mc->varlist()) {
       const auto *refExpr = dyn_cast<DeclRefExpr>(varExpr->IgnoreImplicit());
+      if (!refExpr && isMemberOfThis(varExpr)) {
+        // A member of the object. The object is mapped, once, which has the
+        // member in the region be where the code expects it to be.
+        if (syms && syms->mapsThis)
+          continue;
+        mlir::Value thisPtr = cgf.loadCXXThis();
+        mlir::Type recordTy =
+            mlir::cast<cir::PointerType>(thisPtr.getType()).getPointee();
+        result.mapVars.push_back(
+            emitMapInfo(builder, cgf.getLoc(varExpr->getSourceRange()),
+                        thisPtr, recordTy, "this", mapFlags));
+        if (syms) {
+          syms->vars.push_back(nullptr);
+          syms->mapsThis = true;
+        }
+        continue;
+      }
       if (!refExpr) {
         // An element or a section, of a local array or of what a local pointer
         // points to.
@@ -212,10 +242,11 @@ bool OpenMPClauseEmitter::emitMap(
         }
         result.mapVars.push_back(emitMapInfo(builder, itemLoc, varPtr, elemTy,
                                              vd->getName(), mapFlags, bounds));
-        if (mapSyms)
-          mapSyms->push_back(vd);
-        if (pointeeSyms && ty->isPointerType())
-          pointeeSyms->insert(vd);
+        if (syms) {
+          syms->vars.push_back(vd);
+          if (ty->isPointerType())
+            syms->pointee.insert(vd);
+        }
         continue;
       }
 
@@ -228,8 +259,8 @@ bool OpenMPClauseEmitter::emitMap(
 
       result.mapVars.push_back(
           emitMapInfoForVar(cgf, builder, loc, vd, mapFlags));
-      if (mapSyms)
-        mapSyms->push_back(vd);
+      if (syms)
+        syms->vars.push_back(vd);
     }
   }
   return found;
