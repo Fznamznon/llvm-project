@@ -39,12 +39,51 @@ void simd_outer_counter(int n) {
   // CHECK: cir.store{{.*}}%[[I:.*]] : !s32i, !cir.ptr<!s32i>
 }
 
+void simd_reduction(int *a, float *b, int n) {
+  int sum = 0, mx = 0;
+  float prod = 1.0f;
+  // CHECK-LABEL: cir.func{{.*}}@_Z14simd_reductionPiPfi
+  // CHECK: %[[SUM:.*]] = cir.alloca "sum"
+  // CHECK: %[[MX:.*]] = cir.alloca "mx"
+  // CHECK: %[[PROD:.*]] = cir.alloca "prod"
+#pragma omp simd reduction(+ : sum) reduction(max : mx) reduction(* : prod)
+  for (int i = 0; i < n; ++i) {
+    sum += a[i];
+    if (a[i] > mx)
+      mx = a[i];
+    prod *= b[i];
+  }
+  // Each reduction variable has a private copy starting at the identity of its
+  // operator, which the loop works on.
+  // CHECK: cir.if
+  // CHECK: %[[PSUM:.*]] = cir.alloca "sum"
+  // CHECK: %[[PMX:.*]] = cir.alloca "mx"
+  // CHECK: %[[PPROD:.*]] = cir.alloca "prod"
+  // CHECK: cir.const #cir.int<0>
+  // CHECK: cir.store{{.*}} %{{.*}}, %[[PSUM]]
+  // CHECK: cir.const #cir.int<-2147483648>
+  // CHECK: cir.store{{.*}} %{{.*}}, %[[PMX]]
+  // CHECK: cir.const #cir.int<1>
+  // CHECK: cir.store{{.*}} %{{.*}}, %[[PPROD]]
+  // CHECK: cir.for
+  // CHECK: cir.load{{.*}} %[[PSUM]]
+  // CHECK: loop_hints
+  // After the loop the copies are combined into the originals.
+  // CHECK: cir.load{{.*}} %[[SUM]]
+  // CHECK: cir.load{{.*}} %[[PSUM]]
+  // CHECK: cir.add
+  // CHECK: cir.store{{.*}} %{{.*}}, %[[SUM]]
+  // CHECK: cir.ternary
+  // CHECK: cir.store{{.*}} %{{.*}}, %[[MX]]
+  // CHECK: cir.fmul
+  // CHECK: cir.store{{.*}} %{{.*}}, %[[PROD]]
+}
+
 #ifdef NYI
-void simd_reduction(int *a, int n) {
-  int s = 0;
-  // nyi-error@+1 {{ClangIR code gen Not Yet Implemented: OpenMP SIMD 'reduction' clause}}
-#pragma omp simd reduction(+ : s)
+void simd_safelen(int *a, int n) {
+  // nyi-error@+1 {{ClangIR code gen Not Yet Implemented: OpenMP SIMD 'safelen' clause}}
+#pragma omp simd safelen(4)
   for (int i = 0; i < n; ++i)
-    s += a[i];
+    a[i] = i;
 }
 #endif

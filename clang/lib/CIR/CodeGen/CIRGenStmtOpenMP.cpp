@@ -231,11 +231,11 @@ CIRGenFunction::emitOMPSimdDirective(const OMPSimdDirective &s) {
                                                s.clauses().end());
   OpenMPClauseEmitter ce(*this, cgm, builder, begin, clauses);
   if (mlir::failed(ce.emitNYI</*supported=*/OMPPrivateClause,
-                              OMPCollapseClause>(
+                              OMPCollapseClause, OMPReductionClause>(
           /*nyi=*/OpenMPNYIClauseList<OMPAlignedClause, OMPAllocateClause,
                                       OMPIfClause, OMPLastprivateClause,
                                       OMPLinearClause, OMPNontemporalClause,
-                                      OMPOrderClause, OMPReductionClause,
+                                      OMPOrderClause,
                                       OMPSafelenClause, OMPSimdlenClause>{},
           llvm::omp::Directive::OMPD_simd)))
     return mlir::failure();
@@ -336,6 +336,55 @@ CIRGenFunction::emitOMPSimdDirective(const OMPSimdDirective &s) {
         }
       }
 
+      // reduction(op: x): the loop works on a copy of x that starts out as the
+      // identity of op, which keeps the iterations independent of each other.
+      // The copies are combined into the originals after the loop.
+      struct Reduction {
+        const VarDecl *lhs, *rhs;
+        Address orig, priv;
+        const Expr *combiner;
+      };
+      llvm::SmallVector<Reduction> reductions;
+      for (const auto *c : s.getClausesOfKind<OMPReductionClause>()) {
+        if (c->getModifier() != OMPC_REDUCTION_unknown &&
+            c->getModifier() != OMPC_REDUCTION_default) {
+          cgm.errorNYI(c->getBeginLoc(), "OpenMP simd reduction modifier");
+          res = mlir::failure();
+          return;
+        }
+        for (auto [ref, privRef, lhs, rhs, op] :
+             llvm::zip(c->varlist(), c->privates(), c->lhs_exprs(),
+                       c->rhs_exprs(), c->reduction_ops())) {
+          const auto *orig =
+              dyn_cast<VarDecl>(cast<DeclRefExpr>(ref)->getDecl());
+          // Only the operators of the language, applied to a scalar.
+          const auto *combiner =
+              dyn_cast<BinaryOperator>(op->IgnoreParenImpCasts());
+          if (!orig || !orig->getType()->isScalarType() ||
+              orig->getType()->isReferenceType() || !combiner ||
+              !combiner->isAssignmentOp()) {
+            cgm.errorNYI(ref->getSourceRange(),
+                         "OpenMP simd reduction of this variable or with a "
+                         "user-defined reduction");
+            res = mlir::failure();
+            return;
+          }
+          Address origAddr = emitLValue(ref).getAddress();
+          const auto *privateVD =
+              cast<VarDecl>(cast<DeclRefExpr>(privRef)->getDecl());
+          privatized.emplace_back(*this, privateVD);
+          AutoVarEmission emission = emitAutoVarAlloca(*privateVD);
+          emitAutoVarInit(emission);
+          emitAutoVarCleanups(emission);
+          Address privAddr = emission.getAllocatedAddress();
+          privatize(orig, privAddr);
+          reductions.push_back(
+              {cast<VarDecl>(cast<DeclRefExpr>(lhs)->getDecl()),
+               cast<VarDecl>(cast<DeclRefExpr>(rhs)->getDecl()), origAddr,
+               privAddr, op});
+        }
+      }
+
       // The loop proper.
       cir::ForOp forOp = builder.createFor(
           loopLoc,
@@ -378,6 +427,16 @@ CIRGenFunction::emitOMPSimdDirective(const OMPSimdDirective &s) {
       loopOp.setLoopHintsAttr(hints);
       loopOp.setLoopIdAttr(mlir::DistinctAttr::create(unit));
       terminateStructuredRegionBody(forOp.getBody(), end);
+
+      // The combiners are written in terms of two helper variables: the
+      // original (the result) and the private copy.
+      for (const Reduction &r : reductions) {
+        privatized.emplace_back(*this, r.lhs);
+        privatize(r.lhs, r.orig);
+        privatized.emplace_back(*this, r.rhs);
+        privatize(r.rhs, r.priv);
+        emitIgnoredExpr(r.combiner);
+      }
 
       // A counter that exists outside of the loop holds, afterwards, the value
       // it would have after the last iteration.
