@@ -941,6 +941,7 @@ emitTargetClauses(CIRGenFunction &cgf, CIRGenModule &cgm,
   OpenMPClauseEmitter ce(cgf, cgm, builder, loc, clauses);
   ce.emitMap(clauseOps, &syms.map);
   ce.emitIsDevicePtr(clauseOps, &syms.deviceAddr);
+  ce.emitIf(clauseOps, llvm::omp::Directive::OMPD_target);
 
   // firstprivate(x): the target region gets a copy of x, initialized from the
   // value it has outside, which is mapped over to the device for that.
@@ -969,11 +970,11 @@ emitTargetClauses(CIRGenFunction &cgf, CIRGenModule &cgm,
   if (mlir::failed(res))
     return res;
 
-  return ce.emitNYI</*supported=*/OMPMapClause, OMPIsDevicePtrClause>(
+  return ce.emitNYI</*supported=*/OMPMapClause, OMPIsDevicePtrClause, OMPIfClause>(
       /*nyi=*/OpenMPNYIClauseList<
           OMPAllocateClause, OMPDefaultClause, OMPDefaultmapClause,
           OMPDependClause, OMPDeviceClause, OMPFirstprivateClause,
-          OMPHasDeviceAddrClause, OMPIfClause, OMPInReductionClause,
+          OMPHasDeviceAddrClause, OMPInReductionClause,
           OMPNowaitClause, OMPPrivateClause, OMPThreadLimitClause,
           OMPUsesAllocatorsClause, OMPXBareClause>{},
       llvm::omp::Directive::OMPD_target);
