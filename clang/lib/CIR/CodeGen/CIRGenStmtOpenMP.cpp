@@ -817,12 +817,22 @@ CIRGenFunction::emitOMPAtomicDirective(const OMPAtomicDirective &s) {
   return mlir::failure();
 }
 
+/// The variables of a target region that its clauses take care of, in the order
+/// of the operands (and so of the entry block arguments) they were emitted as.
+struct TargetSyms {
+  /// is_device_ptr: block arguments before any others.
+  llvm::SmallVector<const VarDecl *> deviceAddr;
+  llvm::SmallVector<const VarDecl *> map;
+  /// firstprivate, with the index of the map operand each is initialized from.
+  llvm::SmallVector<const VarDecl *> priv;
+  llvm::SmallVector<int64_t> privateMaps;
+};
+
 /// Check for unsupported implicit captures in a target region.
 static mlir::LogicalResult
 emitOMPTargetImplicitCaptures(CIRGenFunction &cgf,
                               const OMPExecutableDirective &s,
-                              llvm::ArrayRef<const VarDecl *> mapSyms,
-                              llvm::ArrayRef<const VarDecl *> privateSyms) {
+                              const TargetSyms &syms) {
   const CapturedStmt *cs = s.getCapturedStmt(llvm::omp::OMPD_target);
   mlir::LogicalResult res = mlir::success();
   for (const auto &capture : cs->captures()) {
@@ -834,7 +844,8 @@ emitOMPTargetImplicitCaptures(CIRGenFunction &cgf,
     }
     if (capture.capturesVariableByCopy()) {
       // The variable is privatized by a firstprivate clause.
-      if (llvm::is_contained(privateSyms, capture.getCapturedVar()))
+      if (llvm::is_contained(syms.priv, capture.getCapturedVar()) ||
+          llvm::is_contained(syms.deviceAddr, capture.getCapturedVar()))
         continue;
       cgf.getCIRGenModule().errorNYI(s.getBeginLoc(),
                                      "OpenMP target capture by copy");
@@ -850,7 +861,7 @@ emitOMPTargetImplicitCaptures(CIRGenFunction &cgf,
     }
     if (capture.capturesVariable()) {
       const VarDecl *vd = capture.getCapturedVar();
-      if (llvm::is_contained(mapSyms, vd))
+      if (llvm::is_contained(syms.map, vd))
         continue;
 
       cgf.getCIRGenModule().errorNYI(s.getBeginLoc(),
@@ -902,13 +913,11 @@ emitTargetClauses(CIRGenFunction &cgf, CIRGenModule &cgm,
                   CIRGenBuilderTy &builder, mlir::Location loc,
                   llvm::ArrayRef<const OMPClause *> clauses,
                   llvm::ArrayRef<const VarDecl *> firstprivateVars,
-                  mlir::omp::TargetExtOperands &clauseOps,
-                  llvm::SmallVectorImpl<const VarDecl *> &mapSyms,
-                  llvm::SmallVectorImpl<const VarDecl *> &privateSyms,
-                  llvm::SmallVectorImpl<int64_t> &privateMaps) {
+                  mlir::omp::TargetExtOperands &clauseOps, TargetSyms &syms) {
   mlir::LogicalResult res = mlir::success();
   OpenMPClauseEmitter ce(cgf, cgm, builder, loc, clauses);
-  ce.emitMap(clauseOps, &mapSyms);
+  ce.emitMap(clauseOps, &syms.map);
+  ce.emitIsDevicePtr(clauseOps, &syms.deviceAddr);
 
   // firstprivate(x): the target region gets a copy of x, initialized from the
   // value it has outside, which is mapped over to the device for that.
@@ -927,23 +936,23 @@ emitTargetClauses(CIRGenFunction &cgf, CIRGenModule &cgm,
     mlir::omp::PrivateClauseOp recipe =
         getOrCreateFirstprivateRecipe(cgf, loc, elemTy);
 
-    privateMaps.push_back(clauseOps.mapVars.size());
+    syms.privateMaps.push_back(clauseOps.mapVars.size());
     clauseOps.mapVars.push_back(emitMapInfoForVar(
         cgf, builder, loc, vd, mlir::omp::ClauseMapFlags::to));
     clauseOps.privateVars.push_back(addr.getPointer());
     clauseOps.privateSyms.push_back(mlir::SymbolRefAttr::get(recipe));
-    privateSyms.push_back(vd);
+    syms.priv.push_back(vd);
   }
   if (mlir::failed(res))
     return res;
 
-  return ce.emitNYI</*supported=*/OMPMapClause>(
+  return ce.emitNYI</*supported=*/OMPMapClause, OMPIsDevicePtrClause>(
       /*nyi=*/OpenMPNYIClauseList<
           OMPAllocateClause, OMPDefaultClause, OMPDefaultmapClause,
           OMPDependClause, OMPDeviceClause, OMPFirstprivateClause,
           OMPHasDeviceAddrClause, OMPIfClause, OMPInReductionClause,
-          OMPIsDevicePtrClause, OMPNowaitClause, OMPPrivateClause,
-          OMPThreadLimitClause, OMPUsesAllocatorsClause, OMPXBareClause>{},
+          OMPNowaitClause, OMPPrivateClause, OMPThreadLimitClause,
+          OMPUsesAllocatorsClause, OMPXBareClause>{},
       llvm::omp::Directive::OMPD_target);
 }
 
@@ -953,13 +962,11 @@ emitTargetOp(CIRGenFunction &cgf, const DirectiveTy &s,
              const omp::ConstructQueue &queue,
              omp::ConstructQueue::const_iterator item, mlir::Location begin,
              mlir::Location end, mlir::omp::TargetExtOperands &clauseOps,
-             llvm::ArrayRef<const VarDecl *> mapSyms,
-             llvm::ArrayRef<const VarDecl *> privateSyms,
-             llvm::ArrayRef<int64_t> privateMaps,
+             const TargetSyms &syms,
              llvm::function_ref<mlir::LogicalResult()> emitBody) {
   CIRGenBuilderTy &builder = cgf.getBuilder();
 
-  if (mlir::failed(emitOMPTargetImplicitCaptures(cgf, s, mapSyms, privateSyms)))
+  if (mlir::failed(emitOMPTargetImplicitCaptures(cgf, s, syms)))
     return mlir::failure();
 
   // Use generic for now.
@@ -967,12 +974,15 @@ emitTargetOp(CIRGenFunction &cgf, const DirectiveTy &s,
       &cgf.getMLIRContext(), mlir::omp::TargetExecMode::generic);
 
   auto targetOp = mlir::omp::TargetOp::create(builder, begin, clauseOps);
-  if (!privateMaps.empty())
-    targetOp.setPrivateMapsAttr(builder.getDenseI64ArrayAttr(privateMaps));
+  if (!syms.privateMaps.empty())
+    targetOp.setPrivateMapsAttr(
+        builder.getDenseI64ArrayAttr(syms.privateMaps));
   if (!omp::isLastItemInQueue(item, queue))
     targetOp.setCombined(true);
 
   mlir::Block &block = targetOp.getRegion().emplaceBlock();
+  for (mlir::Value deviceVar : clauseOps.hasDeviceAddrVars)
+    block.addArgument(deviceVar.getType(), begin);
   for (mlir::Value mapVar : clauseOps.mapVars)
     block.addArgument(mapVar.getType(), begin);
   for (mlir::Value privateVar : clauseOps.privateVars)
@@ -984,19 +994,27 @@ emitTargetOp(CIRGenFunction &cgf, const DirectiveTy &s,
   CIRGenFunction::LexicalScope ls{cgf, begin, builder.getInsertionBlock()};
 
   llvm::SmallVector<std::pair<const VarDecl *, Address>> savedAddrs;
-  for (auto [idx, vd] : llvm::enumerate(mapSyms)) {
-    Address origAddr = cgf.getAddrOfLocalVar(vd);
-    savedAddrs.push_back({vd, origAddr});
-    mlir::Value blockArg = block.getArgument(idx);
-    cgf.replaceAddrOfLocalVar(vd, Address(blockArg, origAddr.getAlignment()));
+  // Inside of the region, a variable is seen through the block argument that
+  // stands for it: the device address of is_device_ptr and map variables, and
+  // the private copy of firstprivate ones.
+  unsigned argIdx = 0;
+  for (llvm::ArrayRef<const VarDecl *> vds :
+       {llvm::ArrayRef(syms.deviceAddr), llvm::ArrayRef(syms.map)}) {
+    for (const VarDecl *vd : vds) {
+      Address origAddr = cgf.getAddrOfLocalVar(vd);
+      savedAddrs.push_back({vd, origAddr});
+      cgf.replaceAddrOfLocalVar(
+          vd, Address(block.getArgument(argIdx++), origAddr.getAlignment()));
+    }
   }
-
-  // The region sees a firstprivate variable through its private copy.
-  for (auto [idx, vd] : llvm::enumerate(privateSyms)) {
+  // Private block arguments come after those of all the map operands, which
+  // include the ones that firstprivate variables are initialized from.
+  argIdx = clauseOps.hasDeviceAddrVars.size() + clauseOps.mapVars.size();
+  for (const VarDecl *vd : syms.priv) {
     Address origAddr = cgf.getAddrOfLocalVar(vd);
     savedAddrs.push_back({vd, origAddr});
-    mlir::Value blockArg = block.getArgument(clauseOps.mapVars.size() + idx);
-    cgf.replaceAddrOfLocalVar(vd, Address(blockArg, origAddr.getAlignment()));
+    cgf.replaceAddrOfLocalVar(
+        vd, Address(block.getArgument(argIdx++), origAddr.getAlignment()));
   }
 
   mlir::LogicalResult res = emitBody();
@@ -1021,16 +1039,13 @@ CIRGenFunction::emitOMPTargetDirective(const OMPTargetDirective &s) {
     return mlir::failure();
 
   mlir::omp::TargetExtOperands clauseOps;
-  llvm::SmallVector<const VarDecl *> mapSyms, privateSyms;
-  llvm::SmallVector<int64_t> privateMaps;
+  TargetSyms syms;
   if (mlir::failed(emitTargetClauses(*this, getCIRGenModule(), builder, begin,
                                      item->clauses, item->firstprivateVars,
-                                     clauseOps, mapSyms, privateSyms,
-                                     privateMaps)))
+                                     clauseOps, syms)))
     return mlir::failure();
 
-  return emitTargetOp(*this, s, queue, item, begin, end, clauseOps, mapSyms,
-                      privateSyms, privateMaps,
+  return emitTargetOp(*this, s, queue, item, begin, end, clauseOps, syms,
                       [&]() -> mlir::LogicalResult {
                         const CapturedStmt *cs =
                             s.getCapturedStmt(llvm::omp::OMPD_target);
@@ -1087,17 +1102,15 @@ mlir::LogicalResult CIRGenFunction::emitOMPTargetParallelDirective(
     return mlir::failure();
 
   mlir::omp::TargetExtOperands targetOps;
-  llvm::SmallVector<const VarDecl *> mapSyms, privateSyms;
-  llvm::SmallVector<int64_t> privateMaps;
-  if (mlir::failed(emitTargetClauses(
-          *this, getCIRGenModule(), builder, begin, targetItem->clauses,
-          targetItem->firstprivateVars, targetOps, mapSyms, privateSyms,
-          privateMaps)))
+  TargetSyms syms;
+  if (mlir::failed(emitTargetClauses(*this, getCIRGenModule(), builder, begin,
+                                     targetItem->clauses,
+                                     targetItem->firstprivateVars, targetOps,
+                                     syms)))
     return mlir::failure();
 
   return emitTargetOp(
-      *this, s, queue, targetItem, begin, end, targetOps, mapSyms, privateSyms,
-      privateMaps,
+      *this, s, queue, targetItem, begin, end, targetOps, syms,
       [&]() -> mlir::LogicalResult {
         omp::ConstructQueue::const_iterator parallelItem =
             std::next(targetItem);

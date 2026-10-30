@@ -210,6 +210,44 @@ bool OpenMPClauseEmitter::emitIf(mlir::omp::IfClauseOps &result,
   return false;
 }
 
+bool OpenMPClauseEmitter::emitIsDevicePtr(
+    mlir::omp::TargetOperands &result,
+    llvm::SmallVectorImpl<const VarDecl *> *syms) const {
+  bool found = false;
+  for (const OMPClause *clause : clauses) {
+    const auto *dc = dyn_cast<OMPIsDevicePtrClause>(clause);
+    if (!dc)
+      continue;
+    found = true;
+
+    for (const Expr *varExpr : dc->varlist()) {
+      const auto *refExpr = dyn_cast<DeclRefExpr>(varExpr->IgnoreImplicit());
+      const auto *vd =
+          refExpr ? dyn_cast<VarDecl>(refExpr->getDecl()) : nullptr;
+      if (!vd || !vd->getType()->isPointerType() || vd->hasGlobalStorage()) {
+        cgm.errorNYI(varExpr->getExprLoc(),
+                     "OpenMP is_device_ptr of something other than a local "
+                     "pointer variable");
+        continue;
+      }
+
+      // The pointer is mapped, so that the region gets a variable holding it;
+      // the flag keeps the runtime from translating its value. The clause and
+      // the region argument each need an operation of their own.
+      mlir::omp::ClauseMapFlags flags =
+          mlir::omp::ClauseMapFlags::is_device_ptr |
+          mlir::omp::ClauseMapFlags::to;
+      result.hasDeviceAddrVars.push_back(
+          emitMapInfoForVar(cgf, builder, loc, vd, flags));
+      result.isDevicePtrVars.push_back(
+          emitMapInfoForVar(cgf, builder, loc, vd, flags));
+      if (syms)
+        syms->push_back(vd);
+    }
+  }
+  return found;
+}
+
 bool OpenMPClauseEmitter::emitMap(
     mlir::omp::MapClauseOps &result,
     llvm::SmallVectorImpl<const VarDecl *> *mapSyms) const {

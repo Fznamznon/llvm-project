@@ -53,6 +53,13 @@ public:
   bool emitMap(mlir::omp::MapClauseOps &result,
                llvm::SmallVectorImpl<const VarDecl *> *mapSyms = nullptr) const;
 
+  /// Emit is_device_ptr clauses: the pointers are already device addresses, so
+  /// they are passed to the region as they are. The optional \p syms collects
+  /// the VarDecl of each.
+  bool emitIsDevicePtr(
+      mlir::omp::TargetOperands &result,
+      llvm::SmallVectorImpl<const VarDecl *> *syms = nullptr) const;
+
   bool emitNumThreads(mlir::omp::NumThreadsClauseOps &result) const;
 
   bool emitProcBind(mlir::omp::ProcBindClauseOps &result) const;
