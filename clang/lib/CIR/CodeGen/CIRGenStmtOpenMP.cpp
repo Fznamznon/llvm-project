@@ -694,8 +694,36 @@ CIRGenFunction::emitOMPSectionDirective(const OMPSectionDirective &s) {
 }
 mlir::LogicalResult
 CIRGenFunction::emitOMPSingleDirective(const OMPSingleDirective &s) {
-  getCIRGenModule().errorNYI(s.getSourceRange(), "OpenMP OMPSingleDirective");
-  return mlir::failure();
+  CIRGenModule &cgm = getCIRGenModule();
+  mlir::Location begin = getLoc(s.getBeginLoc());
+  mlir::Location end = getLoc(s.getEndLoc());
+
+  llvm::SmallVector<const OMPClause *> clauses(s.clauses().begin(),
+                                               s.clauses().end());
+  OpenMPClauseEmitter ce(*this, cgm, builder, begin, clauses);
+  if (mlir::failed(ce.emitNYI</*supported=*/OMPNowaitClause>(
+          /*nyi=*/OpenMPNYIClauseList<OMPAllocateClause, OMPCopyprivateClause,
+                                      OMPFirstprivateClause,
+                                      OMPPrivateClause>{},
+          llvm::omp::Directive::OMPD_single)))
+    return mlir::failure();
+
+  // The threads that don't execute the block wait for the one that does at
+  // the end of the construct, unless told not to.
+  mlir::omp::SingleOperands clauseOps;
+  if (s.getSingleClause<OMPNowaitClause>())
+    clauseOps.nowait = builder.getUnitAttr();
+
+  auto singleOp = mlir::omp::SingleOp::create(builder, begin, clauseOps);
+  mlir::Block &block = singleOp.getRegion().emplaceBlock();
+  mlir::OpBuilder::InsertionGuard guard(builder);
+  builder.setInsertionPointToEnd(&block);
+
+  CIRGenFunction::LexicalScope ls{*this, begin, builder.getInsertionBlock()};
+  mlir::LogicalResult res =
+      emitStmt(s.getStructuredBlock(), /*useCurrentScope=*/true);
+  mlir::omp::TerminatorOp::create(builder, end);
+  return res;
 }
 mlir::LogicalResult
 CIRGenFunction::emitOMPMasterDirective(const OMPMasterDirective &s) {

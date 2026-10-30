@@ -5,10 +5,6 @@ void do_things() {
 #pragma omp critical
   {}
 
-  // expected-error@+1{{ClangIR code gen Not Yet Implemented: OpenMP OMPSingleDirective}}
-#pragma omp single
-  {}
-
   int i;
   // A leaf that reports a not-yet-implemented clause emits no op at all, rather
   // than one that silently ignores the clause.
