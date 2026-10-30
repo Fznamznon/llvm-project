@@ -2884,6 +2884,11 @@ public:
   mlir::LogicalResult emitOMPUnrollDirective(const OMPUnrollDirective &s);
   mlir::LogicalResult emitOMPFuseDirective(const OMPFuseDirective &s);
   mlir::LogicalResult emitOMPForDirective(const OMPForDirective &s);
+  /// Emit the worksharing loop of \p s, which iterates the loop(s) that the
+  /// directive is about as a whole, as the options say.
+  mlir::LogicalResult
+  emitOMPWorksharingLoop(const OMPLoopDirective &s,
+                         const struct OMPWorksharingLoopOptions &opts);
   mlir::LogicalResult emitOMPForSimdDirective(const OMPForSimdDirective &s);
   mlir::LogicalResult emitOMPSectionsDirective(const OMPSectionsDirective &s);
   mlir::LogicalResult emitOMPSectionDirective(const OMPSectionDirective &s);

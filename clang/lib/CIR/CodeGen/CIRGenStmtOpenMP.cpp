@@ -45,6 +45,10 @@ checkSynthesizedClauses(CIRGenFunction &cgf, const OMPExecutableDirective &s,
                         omp::ConstructQueue::const_iterator item) {
   mlir::LogicalResult res = mlir::success();
   for (llvm::omp::Clause synth : item->synthesized) {
+    // Variables are shared by default, so a leaf that is told so has nothing
+    // to do.
+    if (synth == llvm::omp::OMPC_shared)
+      continue;
     cgf.getCIRGenModule().errorNYI(s.getSourceRange(),
                                    (llvm::Twine("OpenMP synthesized '") +
                                     llvm::omp::getOpenMPClauseName(synth) +
@@ -474,23 +478,44 @@ CIRGenFunction::emitOMPFuseDirective(const OMPFuseDirective &s) {
   getCIRGenModule().errorNYI(s.getSourceRange(), "OpenMP OMPFuseDirective");
   return mlir::failure();
 }
-/// Emit `#pragma omp for` as a worksharing loop over the normalized iteration
-/// variable, the way classic codegen sees it (the loop nest is collapsed into
-/// a single iteration space by Sema):
+namespace clang::CIRGen {
+/// How a worksharing loop is emitted.
+struct OMPWorksharingLoopOptions {
+  /// What the loop is of, for diagnostics.
+  const char *what;
+  bool hasCancel = false;
+  /// Whether the loop is the innermost leaf of a composite construct, with
+  /// 'distribute' in front of it. It then is inside of the leaves that wrap it,
+  /// each in a region of its own: \c wrap emits those that are to be around the
+  /// loop proper, around what it is given to emit; and \c outerWrap those that
+  /// are around everything else too, as everything the loop needs evaluated
+  /// first is part of them.
+  bool composite = false;
+  using Wrapper = llvm::function_ref<mlir::LogicalResult(
+      llvm::function_ref<mlir::LogicalResult()>)>;
+  Wrapper wrap, outerWrap;
+};
+} // namespace clang::CIRGen
+
+/// Emit a worksharing loop over the normalized iteration variable, the way
+/// classic codegen sees it (the loop nest is collapsed into a single iteration
+/// space by Sema):
 ///
 ///   <pre-inits>
 ///   <privatize counters>
 ///   if (PreCond) {
-///     IV; LastIteration = ...;
-///     <privatize 'private' clause variables>
-///     omp.wsloop { omp.loop_nest (%iv) = (0) to (LastIteration) inclusive
-///                  step (1) { IV = %iv; <counter = update(IV)>; BODY } }
+///     LastIteration = ...;
+///     [wrappers: omp.teams { omp.parallel {]
+///       IV; <privatize 'private' clause variables>
+///       [omp.distribute {]
+///       omp.wsloop { omp.loop_nest (%iv) = (0) to (LastIteration) inclusive
+///                    step (1) { IV = %iv; <counter = update(IV)>; BODY } }
 ///   }
 ///
-/// Currently only the 'private', 'collapse' and 'nowait' clauses, and
-/// rectangular loop nests, are supported.
-mlir::LogicalResult
-CIRGenFunction::emitOMPForDirective(const OMPForDirective &s) {
+/// Currently only the 'private', 'collapse', 'nowait' and 'schedule' clauses,
+/// and rectangular loop nests, are supported.
+mlir::LogicalResult CIRGenFunction::emitOMPWorksharingLoop(
+    const OMPLoopDirective &s, const OMPWorksharingLoopOptions &opts) {
   CIRGenModule &cgm = getCIRGenModule();
   mlir::Location begin = getLoc(s.getBeginLoc());
   mlir::Location end = getLoc(s.getEndLoc());
@@ -498,20 +523,13 @@ CIRGenFunction::emitOMPForDirective(const OMPForDirective &s) {
   llvm::SmallVector<const OMPClause *> clauses(s.clauses().begin(),
                                                s.clauses().end());
   OpenMPClauseEmitter ce(*this, cgm, builder, begin, clauses);
-  if (mlir::failed(ce.emitNYI</*supported=*/OMPPrivateClause, OMPCollapseClause,
-                              OMPNowaitClause, OMPScheduleClause>(
-          /*nyi=*/OpenMPNYIClauseList<OMPAllocateClause, OMPFirstprivateClause,
-                                      OMPLastprivateClause, OMPLinearClause,
-                                      OMPOrderClause, OMPOrderedClause,
-                                      OMPReductionClause>{},
-          llvm::omp::Directive::OMPD_for)))
+
+  if (mlir::failed(checkRectangularLoopNest(*this, s, opts.what)))
     return mlir::failure();
 
-  if (mlir::failed(checkRectangularLoopNest(*this, s, "for")))
-    return mlir::failure();
-
-  if (s.hasCancel()) {
-    cgm.errorNYI(s.getSourceRange(), "OpenMP for with Cancel");
+  if (opts.hasCancel) {
+    cgm.errorNYI(s.getSourceRange(),
+                 std::string("OpenMP ") + opts.what + " with Cancel");
     return mlir::failure();
   }
 
@@ -523,7 +541,8 @@ CIRGenFunction::emitOMPForDirective(const OMPForDirective &s) {
   if (!ivDecl->getType()->isSignedIntegerType() &&
       getContext().getTypeSize(ivDecl->getType()) >= 64) {
     cgm.errorNYI(s.getSourceRange(),
-                 "OpenMP for with a 64-bit unsigned iteration variable");
+                 std::string("OpenMP ") + opts.what +
+                     " with a 64-bit unsigned iteration variable");
     return mlir::failure();
   }
 
@@ -537,6 +556,28 @@ CIRGenFunction::emitOMPForDirective(const OMPForDirective &s) {
     replaceAddrOfLocalVar(orig, addr);
   };
 
+  // Loop counters are private to each thread, including those declared before
+  // the loop, so the original is left untouched.
+  auto privatizeCounters = [&]() -> bool {
+    for (auto [counter, privateCounter] :
+         llvm::zip(s.counters(), s.private_counters())) {
+      const auto *vd = cast<VarDecl>(cast<DeclRefExpr>(counter)->getDecl());
+      if (vd->hasGlobalStorage()) {
+        cgm.errorNYI(counter->getSourceRange(),
+                     std::string("OpenMP ") + opts.what +
+                         " with a global loop counter");
+        return false;
+      }
+      const auto *privateVD =
+          cast<VarDecl>(cast<DeclRefExpr>(privateCounter)->getDecl());
+      privatized.emplace_back(*this, privateVD);
+      AutoVarEmission emission = emitAutoVarAlloca(*privateVD);
+      emitAutoVarCleanups(emission);
+      privatize(vd, emission.getAllocatedAddress());
+    }
+    return true;
+  };
+
   auto forBuilder = [&](mlir::OpBuilder &, mlir::Location scopeLoc) {
     LexicalScope lexScope{*this, scopeLoc, builder.getInsertionBlock()};
 
@@ -545,23 +586,9 @@ CIRGenFunction::emitOMPForDirective(const OMPForDirective &s) {
       return;
     }
 
-    // Loop counters are private to each thread, including those declared
-    // before the loop, so the original is left untouched.
-    for (auto [counter, privateCounter] :
-         llvm::zip(s.counters(), s.private_counters())) {
-      const auto *vd = cast<VarDecl>(cast<DeclRefExpr>(counter)->getDecl());
-      if (vd->hasGlobalStorage()) {
-        cgm.errorNYI(counter->getSourceRange(),
-                     "OpenMP for with a global loop counter");
-        res = mlir::failure();
-        return;
-      }
-      const auto *privateVD =
-          cast<VarDecl>(cast<DeclRefExpr>(privateCounter)->getDecl());
-      privatized.emplace_back(*this, privateVD);
-      AutoVarEmission emission = emitAutoVarAlloca(*privateVD);
-      emitAutoVarCleanups(emission);
-      privatize(vd, emission.getAllocatedAddress());
+    if (!privatizeCounters()) {
+      res = mlir::failure();
+      return;
     }
 
     // Initial values of the counters, which the pre-condition is made of.
@@ -571,39 +598,11 @@ CIRGenFunction::emitOMPForDirective(const OMPForDirective &s) {
     auto loopBuilder = [&](mlir::OpBuilder &, mlir::Location loopLoc) {
       LexicalScope lexScope{*this, loopLoc, builder.getInsertionBlock()};
 
-      // The normalized iteration variable (assigned by the loop itself) and
-      // the iteration count.
-      emitVarDecl(*ivDecl);
-      // If the iteration count isn't a variable, Sema has decided to
+      // The iteration count. If it isn't a variable, Sema has decided to
       // recompute it at every use.
       if (const auto *lastIter = dyn_cast<DeclRefExpr>(s.getLastIteration())) {
         emitVarDecl(*cast<VarDecl>(lastIter->getDecl()));
         emitIgnoredExpr(s.getCalcLastIteration());
-      }
-
-      // private(x): each variable gets storage of its own, which is used
-      // instead of the original inside the construct.
-      llvm::SmallPtrSet<const VarDecl *, 4> seen;
-      for (const auto *c : s.getClausesOfKind<OMPPrivateClause>()) {
-        for (auto [ref, copy] : llvm::zip(c->varlist(), c->private_copies())) {
-          const auto *orig =
-              dyn_cast<VarDecl>(cast<DeclRefExpr>(ref)->getDecl());
-          if (!orig) {
-            cgm.errorNYI(ref->getSourceRange(),
-                         "OpenMP for private clause on a non-variable");
-            res = mlir::failure();
-            return;
-          }
-          if (!seen.insert(orig->getCanonicalDecl()).second)
-            continue;
-          const auto *privateVD =
-              cast<VarDecl>(cast<DeclRefExpr>(copy)->getDecl());
-          privatized.emplace_back(*this, privateVD);
-          AutoVarEmission emission = emitAutoVarAlloca(*privateVD);
-          emitAutoVarInit(emission);
-          emitAutoVarCleanups(emission);
-          privatize(orig, emission.getAllocatedAddress());
-        }
       }
 
       // The iteration space, as builtin integers as the omp dialect wants.
@@ -620,47 +619,111 @@ CIRGenFunction::emitOMPForDirective(const OMPForDirective &s) {
       mlir::Value step = builder.createBuiltinIntCast(
           builder.getConstInt(loopLoc, loopTy, 1), builtinIVTy);
 
-      mlir::omp::WsloopOperands wsOps;
-      if (mlir::failed(ce.emitSchedule(wsOps))) {
+      // What is inside of the leaves that wrap the loop, if any.
+      auto emitLoop = [&]() -> mlir::LogicalResult {
+        // The threads each have counters of their own, in place of those of
+        // the one that evaluated the pre-condition.
+        if (opts.composite) {
+          for (auto [counter, privateCounter] :
+               llvm::zip(s.counters(), s.private_counters())) {
+            const auto *vd =
+                cast<VarDecl>(cast<DeclRefExpr>(counter)->getDecl());
+            const auto *privateVD =
+                cast<VarDecl>(cast<DeclRefExpr>(privateCounter)->getDecl());
+            Address addr =
+                createMemTemp(vd->getType(), loopLoc, vd->getName());
+            privatize(vd, addr);
+            privatize(privateVD, addr);
+          }
+        }
+
+        // The normalized iteration variable (assigned by the loop itself).
+        emitVarDecl(*ivDecl);
+
+        // private(x): each variable gets storage of its own, which is used
+        // instead of the original inside the construct.
+        llvm::SmallPtrSet<const VarDecl *, 4> seen;
+        for (const auto *c : s.getClausesOfKind<OMPPrivateClause>()) {
+          for (auto [ref, copy] :
+               llvm::zip(c->varlist(), c->private_copies())) {
+            const auto *orig =
+                dyn_cast<VarDecl>(cast<DeclRefExpr>(ref)->getDecl());
+            if (!orig) {
+              cgm.errorNYI(ref->getSourceRange(),
+                           std::string("OpenMP ") + opts.what +
+                               " private clause on a non-variable");
+              return mlir::failure();
+            }
+            if (!seen.insert(orig->getCanonicalDecl()).second)
+              continue;
+            const auto *privateVD =
+                cast<VarDecl>(cast<DeclRefExpr>(copy)->getDecl());
+            privatized.emplace_back(*this, privateVD);
+            AutoVarEmission emission = emitAutoVarAlloca(*privateVD);
+            emitAutoVarInit(emission);
+            emitAutoVarCleanups(emission);
+            privatize(orig, emission.getAllocatedAddress());
+          }
+        }
+
+        mlir::omp::WsloopOperands wsOps;
+        if (mlir::failed(ce.emitSchedule(wsOps)))
+          return mlir::failure();
+        wsOps.nowait = s.getSingleClause<OMPNowaitClause>()
+                           ? builder.getUnitAttr()
+                           : mlir::UnitAttr();
+
+        mlir::OpBuilder::InsertionGuard guard(builder);
+
+        // The loop is distributed over the teams, and then divided up between
+        // the threads of each.
+        if (opts.composite) {
+          auto distribute = mlir::omp::DistributeOp::create(
+              builder, loopLoc, mlir::omp::DistributeOperands{});
+          distribute.setComposite(true);
+          builder.setInsertionPointToEnd(&distribute.getRegion().emplaceBlock());
+        }
+
+        auto wsloop = mlir::omp::WsloopOp::create(builder, loopLoc, wsOps);
+        if (opts.composite)
+          wsloop.setComposite(true);
+        builder.setInsertionPointToEnd(&wsloop.getRegion().emplaceBlock());
+
+        mlir::omp::LoopNestOperands nestOps;
+        nestOps.loopLowerBounds.push_back(lb);
+        nestOps.loopUpperBounds.push_back(ub);
+        nestOps.loopSteps.push_back(step);
+        nestOps.loopInclusive = builder.getUnitAttr();
+        auto nest = mlir::omp::LoopNestOp::create(builder, loopLoc, nestOps);
+        mlir::Block &body = nest.getRegion().emplaceBlock();
+        mlir::Value ivArg = body.addArgument(builtinIVTy, loopLoc);
+        builder.setInsertionPointToEnd(&body);
+
+        mlir::LogicalResult bodyRes = mlir::success();
+        {
+          LexicalScope bodyScope{*this, loopLoc, &body};
+          RunCleanupsScope cleanups(*this);
+
+          // Make the iteration variable hold the value of this iteration, then
+          // derive the counters of this iteration from it.
+          mlir::Value iv = builder.createIntCast(
+              builder.createBuiltinIntCast(ivArg, loopTy), cirIVTy);
+          builder.createStore(
+              loopLoc, iv, emitLValue(s.getIterationVariable()).getAddress());
+          for (const Expr *update : s.updates())
+            emitIgnoredExpr(update);
+          bodyRes = emitStmt(s.getBody(), /*useCurrentScope=*/false);
+          emitStopPoint(&s);
+          cleanups.forceCleanup();
+          mlir::omp::YieldOp::create(builder, end);
+        }
+        return bodyRes;
+      };
+
+      mlir::LogicalResult loopRes =
+          opts.wrap ? opts.wrap(emitLoop) : emitLoop();
+      if (mlir::failed(loopRes))
         res = mlir::failure();
-        return;
-      }
-      wsOps.nowait = s.getSingleClause<OMPNowaitClause>() ? builder.getUnitAttr()
-                                                          : mlir::UnitAttr();
-      auto wsloop = mlir::omp::WsloopOp::create(builder, loopLoc, wsOps);
-      mlir::Block &wsBlock = wsloop.getRegion().emplaceBlock();
-
-      mlir::OpBuilder::InsertionGuard guard(builder);
-      builder.setInsertionPointToEnd(&wsBlock);
-
-      mlir::omp::LoopNestOperands nestOps;
-      nestOps.loopLowerBounds.push_back(lb);
-      nestOps.loopUpperBounds.push_back(ub);
-      nestOps.loopSteps.push_back(step);
-      nestOps.loopInclusive = builder.getUnitAttr();
-      auto nest = mlir::omp::LoopNestOp::create(builder, loopLoc, nestOps);
-      mlir::Block &body = nest.getRegion().emplaceBlock();
-      mlir::Value ivArg = body.addArgument(builtinIVTy, loopLoc);
-      builder.setInsertionPointToEnd(&body);
-
-      {
-        LexicalScope bodyScope{*this, loopLoc, &body};
-        RunCleanupsScope cleanups(*this);
-
-        // Make the iteration variable hold the value of this iteration, then
-        // derive the counters of this iteration from it.
-        mlir::Value iv = builder.createIntCast(
-            builder.createBuiltinIntCast(ivArg, loopTy), cirIVTy);
-        builder.createStore(loopLoc, iv,
-                            emitLValue(s.getIterationVariable()).getAddress());
-        for (const Expr *update : s.updates())
-          emitIgnoredExpr(update);
-        if (mlir::failed(emitStmt(s.getBody(), /*useCurrentScope=*/false)))
-          res = mlir::failure();
-        emitStopPoint(&s);
-        cleanups.forceCleanup();
-        mlir::omp::YieldOp::create(builder, end);
-      }
     };
 
     // Run the loop only if it iterates at least once, unless that is known.
@@ -674,8 +737,30 @@ CIRGenFunction::emitOMPForDirective(const OMPForDirective &s) {
                      /*elseBuilder=*/nullptr);
   };
 
-  cir::ScopeOp::create(builder, begin, /*scopeBuilder=*/forBuilder);
-  return res;
+  auto emitScope = [&]() -> mlir::LogicalResult {
+    cir::ScopeOp::create(builder, begin, /*scopeBuilder=*/forBuilder);
+    return res;
+  };
+  return opts.outerWrap ? opts.outerWrap(emitScope) : emitScope();
+}
+
+/// Emit `#pragma omp for`.
+mlir::LogicalResult
+CIRGenFunction::emitOMPForDirective(const OMPForDirective &s) {
+  llvm::SmallVector<const OMPClause *> clauses(s.clauses().begin(),
+                                               s.clauses().end());
+  OpenMPClauseEmitter ce(*this, getCIRGenModule(), builder,
+                         getLoc(s.getBeginLoc()), clauses);
+  if (mlir::failed(ce.emitNYI</*supported=*/OMPPrivateClause, OMPCollapseClause,
+                              OMPNowaitClause, OMPScheduleClause>(
+          /*nyi=*/OpenMPNYIClauseList<OMPAllocateClause, OMPFirstprivateClause,
+                                      OMPLastprivateClause, OMPLinearClause,
+                                      OMPOrderClause, OMPOrderedClause,
+                                      OMPReductionClause>{},
+          llvm::omp::Directive::OMPD_for)))
+    return mlir::failure();
+
+  return emitOMPWorksharingLoop(s, {/*what=*/"for", s.hasCancel()});
 }
 mlir::LogicalResult
 CIRGenFunction::emitOMPForSimdDirective(const OMPForSimdDirective &s) {
@@ -1330,11 +1415,129 @@ CIRGenFunction::emitOMPTeamsDistributeParallelForSimdDirective(
       s.getSourceRange(), "OpenMP OMPTeamsDistributeParallelForSimdDirective");
   return mlir::failure();
 }
+/// Report the clauses of a leaf construct that are not \p supported.
+static mlir::LogicalResult
+rejectClauses(CIRGenFunction &cgf, llvm::ArrayRef<const OMPClause *> clauses,
+              llvm::omp::Directive directive,
+              llvm::function_ref<bool(const OMPClause *)> supported) {
+  mlir::LogicalResult res = mlir::success();
+  for (const OMPClause *c : clauses) {
+    if (supported(c))
+      continue;
+    cgf.getCIRGenModule().errorNYI(
+        c->getBeginLoc(),
+        (llvm::Twine("OpenMP ") +
+         llvm::omp::getOpenMPDirectiveName(directive).upper() + " '" +
+         llvm::omp::getOpenMPClauseName(c->getClauseKind()) + "' clause")
+            .str());
+    res = mlir::failure();
+  }
+  return res;
+}
+
+/// Emit the 'teams distribute parallel for' leaves, of which \p teamsItem is
+/// the first, as
+///
+///   omp.teams { omp.parallel { omp.distribute { omp.wsloop { loop_nest } } } }
+///
+/// around the loop of \p s.
+static mlir::LogicalResult emitTeamsDistributeParallelFor(
+    CIRGenFunction &cgf, const OMPLoopDirective &s, const char *what,
+    bool hasCancel, const omp::ConstructQueue &queue,
+    omp::ConstructQueue::const_iterator teamsItem) {
+  CIRGenBuilderTy &builder = cgf.getBuilder();
+  const bool hasTarget = teamsItem != queue.begin();
+  mlir::Location begin = cgf.getLoc(s.getBeginLoc());
+  mlir::Location end = cgf.getLoc(s.getEndLoc());
+
+  omp::ConstructQueue::const_iterator distributeItem = std::next(teamsItem);
+  omp::ConstructQueue::const_iterator parallelItem = std::next(distributeItem);
+  omp::ConstructQueue::const_iterator forItem = std::next(parallelItem);
+  assert(teamsItem->id == llvm::omp::OMPD_teams &&
+         distributeItem->id == llvm::omp::OMPD_distribute &&
+         parallelItem->id == llvm::omp::OMPD_parallel &&
+         forItem->id == llvm::omp::OMPD_for &&
+         omp::isLastItemInQueue(forItem, queue) &&
+         "expected the leaves of 'teams distribute parallel for'");
+
+  mlir::LogicalResult leavesRes = mlir::success();
+  for (auto item : {teamsItem, distributeItem, parallelItem, forItem})
+    if (mlir::failed(checkSynthesizedClauses(cgf, s, item)))
+      leavesRes = mlir::failure();
+  // The variables that the target region has a private copy of, because of a
+  // firstprivate clause that the compiler has made up for variables that the
+  // region uses, are given to the leaves inside of it as well. They have the
+  // value that the target region's copy has, and that is what they use.
+  auto isImplicitFirstprivate = [&](const OMPClause *c) {
+    return hasTarget && isa<OMPFirstprivateClause>(c) && c->isImplicit();
+  };
+  if (mlir::failed(rejectClauses(
+          cgf, teamsItem->clauses, llvm::omp::OMPD_teams,
+          [](const OMPClause *) { return false; })) ||
+      mlir::failed(rejectClauses(
+          cgf, distributeItem->clauses, llvm::omp::OMPD_distribute,
+          [&](const OMPClause *c) {
+            return isa<OMPCollapseClause>(c) || isImplicitFirstprivate(c);
+          })) ||
+      mlir::failed(rejectClauses(
+          cgf, forItem->clauses, llvm::omp::OMPD_for, [&](const OMPClause *c) {
+            return isa<OMPCollapseClause, OMPScheduleClause>(c) ||
+                   isImplicitFirstprivate(c);
+          })))
+    leavesRes = mlir::failure();
+
+  mlir::omp::ParallelOperands parallelOps;
+  if (mlir::failed(emitParallelClauses(cgf, cgf.getCIRGenModule(), builder,
+                                       begin, parallelItem->clauses,
+                                       parallelOps)))
+    leavesRes = mlir::failure();
+  if (mlir::failed(leavesRes))
+    return mlir::failure();
+
+  // The teams are the outermost, and what is evaluated for the loop is done in
+  // each of them; to omp.target they have to be what is directly inside.
+  auto outerWrap = [&](llvm::function_ref<mlir::LogicalResult()> emitScope)
+      -> mlir::LogicalResult {
+    mlir::OpBuilder::InsertionGuard guard(builder);
+    auto teamsOp =
+        mlir::omp::TeamsOp::create(builder, begin, mlir::omp::TeamsOperands{});
+    builder.setInsertionPointToEnd(&teamsOp.getRegion().emplaceBlock());
+    CIRGenFunction::LexicalScope teamsScope{cgf, begin,
+                                            builder.getInsertionBlock()};
+    mlir::LogicalResult res = emitScope();
+    mlir::omp::TerminatorOp::create(builder, end);
+    return res;
+  };
+
+  auto wrap = [&](llvm::function_ref<mlir::LogicalResult()> emitLoop)
+      -> mlir::LogicalResult {
+    mlir::OpBuilder::InsertionGuard guard(builder);
+    auto parallelOp =
+        mlir::omp::ParallelOp::create(builder, begin, parallelOps);
+    parallelOp.setComposite(true);
+    builder.setInsertionPointToEnd(&parallelOp.getRegion().emplaceBlock());
+    CIRGenFunction::LexicalScope parallelScope{cgf, begin,
+                                               builder.getInsertionBlock()};
+    mlir::LogicalResult res = emitLoop();
+    mlir::omp::TerminatorOp::create(builder, end);
+    return res;
+  };
+
+  OMPWorksharingLoopOptions opts;
+  opts.what = what;
+  opts.hasCancel = hasCancel;
+  opts.composite = true;
+  opts.wrap = wrap;
+  opts.outerWrap = outerWrap;
+  return cgf.emitOMPWorksharingLoop(s, opts);
+}
+
 mlir::LogicalResult CIRGenFunction::emitOMPTeamsDistributeParallelForDirective(
     const OMPTeamsDistributeParallelForDirective &s) {
-  getCIRGenModule().errorNYI(s.getSourceRange(),
-                             "OpenMP OMPTeamsDistributeParallelForDirective");
-  return mlir::failure();
+  omp::ConstructQueue queue =
+      omp::buildConstructQueue(getContext().getLangOpts().OpenMP, s);
+  return emitTeamsDistributeParallelFor(*this, s, "teams distribute parallel for",
+                                        s.hasCancel(), queue, queue.begin());
 }
 mlir::LogicalResult CIRGenFunction::emitOMPTeamsGenericLoopDirective(
     const OMPTeamsGenericLoopDirective &s) {
