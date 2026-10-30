@@ -37,18 +37,19 @@ mapClauseKindToFlags(OpenMPMapClauseKind kind) {
   }
 }
 
-mlir::Value clang::CIRGen::emitMapInfoForVar(
-    CIRGenFunction &cgf, mlir::OpBuilder &builder, mlir::Location loc,
-    const VarDecl *vd, mlir::omp::ClauseMapFlags mapFlags) {
-  Address addr = cgf.getAddrOfLocalVar(vd);
-  mlir::Value varPtr = addr.getPointer();
+/// An omp.map.info for the memory of type \p elemType at \p varPtr, of which
+/// only what \p bounds describe is mapped, if there are any.
+static mlir::Value emitMapInfo(mlir::OpBuilder &builder, mlir::Location loc,
+                               mlir::Value varPtr, mlir::Type elemType,
+                               llvm::StringRef name,
+                               mlir::omp::ClauseMapFlags mapFlags,
+                               mlir::ValueRange bounds = {}) {
   auto varPtrType = mlir::cast<cir::PointerType>(varPtr.getType());
-  mlir::Type elementType = varPtrType.getPointee();
 
   // Cast to generic pointer if needed.
   if (varPtrType.getAddrSpace()) {
     auto genericPtrType =
-        cir::PointerType::get(builder.getContext(), elementType);
+        cir::PointerType::get(builder.getContext(), elemType);
     varPtr = cir::CastOp::create(builder, loc, genericPtrType,
                                  cir::CastKind::address_space, varPtr);
     varPtrType = genericPtrType;
@@ -58,7 +59,7 @@ mlir::Value clang::CIRGen::emitMapInfoForVar(
       builder, loc,
       /*omp_ptr=*/varPtrType,
       /*var_ptr=*/varPtr,
-      /*var_ptr_type=*/mlir::TypeAttr::get(elementType),
+      /*var_ptr_type=*/mlir::TypeAttr::get(elemType),
       /*map_type=*/builder.getAttr<mlir::omp::ClauseMapFlagsAttr>(mapFlags),
       /*map_capture_type=*/
       builder.getAttr<mlir::omp::VariableCaptureKindAttr>(
@@ -67,10 +68,171 @@ mlir::Value clang::CIRGen::emitMapInfoForVar(
       /*var_ptr_ptr_type=*/mlir::TypeAttr{},
       /*members=*/mlir::ValueRange{},
       /*members_index=*/mlir::ArrayAttr{},
-      /*bounds=*/mlir::ValueRange{},
+      /*bounds=*/bounds,
       /*mapper_id=*/mlir::FlatSymbolRefAttr{},
-      /*name=*/builder.getStringAttr(vd->getName()),
+      /*name=*/builder.getStringAttr(name),
       /*partial_map=*/builder.getBoolAttr(false));
+}
+
+mlir::Value clang::CIRGen::emitMapInfoForVar(
+    CIRGenFunction &cgf, mlir::OpBuilder &builder, mlir::Location loc,
+    const VarDecl *vd, mlir::omp::ClauseMapFlags mapFlags) {
+  mlir::Value varPtr = cgf.getAddrOfLocalVar(vd).getPointer();
+  mlir::Type elemType =
+      mlir::cast<cir::PointerType>(varPtr.getType()).getPointee();
+  return emitMapInfo(builder, loc, varPtr, elemType, vd->getName(), mapFlags);
+}
+
+/// What a map clause list item is about: the variable, and the part of it that
+/// is mapped if that isn't all of it.
+struct MappedItem {
+  const VarDecl *vd = nullptr;
+  /// Of a section or an element: the first element and how many of them.
+  const Expr *lower = nullptr, *length = nullptr;
+  bool isSection = false;
+};
+
+static std::optional<MappedItem> classifyMapItem(const Expr *e) {
+  e = e->IgnoreImplicit();
+  MappedItem item;
+  const Expr *base = nullptr;
+  if (const auto *section = dyn_cast<ArraySectionExpr>(e)) {
+    if (section->isOMPArraySection() && section->getStride())
+      return std::nullopt;
+    base = section->getBase();
+    item.lower = section->getLowerBound();
+    item.length = section->getLength();
+  } else if (const auto *subscript = dyn_cast<ArraySubscriptExpr>(e)) {
+    base = subscript->getBase();
+    item.lower = subscript->getIdx();
+  } else {
+    return std::nullopt;
+  }
+  item.isSection = true;
+  const auto *ref = dyn_cast<DeclRefExpr>(base->IgnoreParenImpCasts());
+  item.vd = ref ? dyn_cast<VarDecl>(ref->getDecl()) : nullptr;
+  if (!item.vd)
+    return std::nullopt;
+  return item;
+}
+
+bool OpenMPClauseEmitter::emitMap(
+    mlir::omp::MapClauseOps &result,
+    llvm::SmallVectorImpl<const VarDecl *> *mapSyms,
+    llvm::SmallPtrSetImpl<const VarDecl *> *pointeeSyms) const {
+  bool found = false;
+  for (const OMPClause *clause : clauses) {
+    const auto *mc = dyn_cast<OMPMapClause>(clause);
+    if (!mc)
+      continue;
+
+    found = true;
+
+    for (OpenMPMapModifierKind mod : mc->getMapTypeModifiers()) {
+      if (mod != OMPC_MAP_MODIFIER_unknown)
+        cgm.errorNYI(mc->getBeginLoc(),
+                     std::string("OpenMP map modifier '") +
+                         getOpenMPSimpleClauseTypeName(
+                             llvm::omp::Clause::OMPC_map, mod) +
+                         "'");
+    }
+
+    mlir::omp::ClauseMapFlags mapFlags = mapClauseKindToFlags(mc->getMapType());
+    // Variables that the region uses, and that can't be passed by copy.
+    if (mc->isImplicit())
+      mapFlags |= mlir::omp::ClauseMapFlags::implicit;
+
+    for (const Expr *varExpr : mc->varlist()) {
+      const auto *refExpr = dyn_cast<DeclRefExpr>(varExpr->IgnoreImplicit());
+      if (!refExpr) {
+        // An element or a section, of a local array or of what a local pointer
+        // points to.
+        std::optional<MappedItem> item = classifyMapItem(varExpr);
+        QualType ty = item ? item->vd->getType() : QualType();
+        if (!item || item->vd->hasGlobalStorage() ||
+            !(ty->isConstantArrayType() || ty->isPointerType()) ||
+            (ty->isConstantArrayType() &&
+             cgf.getContext().getAsConstantArrayType(ty)
+                 ->getElementType()
+                 ->isArrayType())) {
+          cgm.errorNYI(varExpr->getExprLoc(),
+                       "OpenMP map clause with this kind of variable; only "
+                       "variables, and one-dimensional sections and elements "
+                       "of local arrays and pointers are supported");
+          continue;
+        }
+        const VarDecl *vd = item->vd;
+        mlir::Location itemLoc = cgf.getLoc(varExpr->getSourceRange());
+
+        cir::IntType s64 = builder.getSInt64Ty();
+        auto asIndex = [&](const Expr *e) {
+          return builder.createIntCast(cgf.emitScalarExpr(e), s64);
+        };
+        mlir::Value lower = item->lower
+                                ? asIndex(item->lower)
+                                : builder.getConstInt(itemLoc, s64, 0);
+        mlir::Value length;
+        if (isa<ArraySubscriptExpr>(varExpr->IgnoreImplicit())) {
+          length = builder.getConstInt(itemLoc, s64, 1);
+        } else if (item->length) {
+          length = asIndex(item->length);
+        } else if (ty->isConstantArrayType()) {
+          // Up to the end of the array.
+          uint64_t size =
+              cgf.getContext().getAsConstantArrayType(ty)->getZExtSize();
+          length = builder.createSub(itemLoc,
+                                     builder.getConstInt(itemLoc, s64, size),
+                                     lower);
+        } else {
+          cgm.errorNYI(varExpr->getExprLoc(),
+                       "OpenMP map of a pointer section without a length");
+          continue;
+        }
+        mlir::Value one = builder.getConstInt(itemLoc, s64, 1);
+        mlir::Value upper = builder.createSub(
+            itemLoc, builder.createAdd(itemLoc, lower, length), one);
+
+        mlir::Type i64 = builder.getIntegerType(64);
+        auto builtin = [&](mlir::Value v) {
+          return builder.createBuiltinIntCast(itemLoc, v, i64);
+        };
+        mlir::Type boundsTy = mlir::omp::MapBoundsType::get(builder.getContext());
+        mlir::Value bounds = mlir::omp::MapBoundsOp::create(
+            builder, itemLoc, boundsTy, builtin(lower), builtin(upper),
+            builtin(length), builtin(one), /*stride_in_bytes=*/false,
+            builtin(builder.getConstInt(itemLoc, s64, 0)));
+
+        mlir::Value varPtr = cgf.getAddrOfLocalVar(vd).getPointer();
+        mlir::Type elemTy =
+            mlir::cast<cir::PointerType>(varPtr.getType()).getPointee();
+        if (ty->isPointerType()) {
+          // The pointer's value is what is mapped, from the pointee.
+          varPtr = cir::LoadOp::create(builder, itemLoc, varPtr);
+          elemTy = mlir::cast<cir::PointerType>(elemTy).getPointee();
+        }
+        result.mapVars.push_back(emitMapInfo(builder, itemLoc, varPtr, elemTy,
+                                             vd->getName(), mapFlags, bounds));
+        if (mapSyms)
+          mapSyms->push_back(vd);
+        if (pointeeSyms && ty->isPointerType())
+          pointeeSyms->insert(vd);
+        continue;
+      }
+
+      const auto *vd = dyn_cast<VarDecl>(refExpr->getDecl());
+      if (!vd) {
+        cgm.errorNYI(varExpr->getExprLoc(),
+                     "OpenMP map clause with non-VarDecl variable");
+        continue;
+      }
+
+      result.mapVars.push_back(
+          emitMapInfoForVar(cgf, builder, loc, vd, mapFlags));
+      if (mapSyms)
+        mapSyms->push_back(vd);
+    }
+  }
+  return found;
 }
 
 bool OpenMPClauseEmitter::emitProcBind(
@@ -248,51 +410,3 @@ bool OpenMPClauseEmitter::emitIsDevicePtr(
   return found;
 }
 
-bool OpenMPClauseEmitter::emitMap(
-    mlir::omp::MapClauseOps &result,
-    llvm::SmallVectorImpl<const VarDecl *> *mapSyms) const {
-  bool found = false;
-  for (const OMPClause *clause : clauses) {
-    const auto *mc = dyn_cast<OMPMapClause>(clause);
-    if (!mc)
-      continue;
-
-    found = true;
-
-    for (OpenMPMapModifierKind mod : mc->getMapTypeModifiers()) {
-      if (mod != OMPC_MAP_MODIFIER_unknown)
-        cgm.errorNYI(mc->getBeginLoc(),
-                     std::string("OpenMP map modifier '") +
-                         getOpenMPSimpleClauseTypeName(
-                             llvm::omp::Clause::OMPC_map, mod) +
-                         "'");
-    }
-
-    mlir::omp::ClauseMapFlags mapFlags = mapClauseKindToFlags(mc->getMapType());
-    // Variables that the region uses, and that can't be passed by copy.
-    if (mc->isImplicit())
-      mapFlags |= mlir::omp::ClauseMapFlags::implicit;
-
-    for (const Expr *varExpr : mc->varlist()) {
-      const auto *refExpr = dyn_cast<DeclRefExpr>(varExpr->IgnoreImplicit());
-      if (!refExpr) {
-        cgm.errorNYI(varExpr->getExprLoc(),
-                     "OpenMP map clause with non-DeclRefExpr variable");
-        continue;
-      }
-
-      const auto *vd = dyn_cast<VarDecl>(refExpr->getDecl());
-      if (!vd) {
-        cgm.errorNYI(varExpr->getExprLoc(),
-                     "OpenMP map clause with non-VarDecl variable");
-        continue;
-      }
-
-      result.mapVars.push_back(
-          emitMapInfoForVar(cgf, builder, loc, vd, mapFlags));
-      if (mapSyms)
-        mapSyms->push_back(vd);
-    }
-  }
-  return found;
-}

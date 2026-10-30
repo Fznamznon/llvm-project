@@ -823,10 +823,24 @@ struct TargetSyms {
   /// is_device_ptr: block arguments before any others.
   llvm::SmallVector<const VarDecl *> deviceAddr;
   llvm::SmallVector<const VarDecl *> map;
+  /// Of the map variables, the pointers of which the pointee is mapped. The
+  /// region gets a variable of its own holding the device address.
+  llvm::SmallPtrSet<const VarDecl *, 4> pointee;
   /// firstprivate, with the index of the map operand each is initialized from.
   llvm::SmallVector<const VarDecl *> priv;
   llvm::SmallVector<int64_t> privateMaps;
 };
+
+/// Add to \p vars the variables that \p e refers to.
+static void collectReferencedVars(const Stmt *e,
+                                  llvm::SmallPtrSetImpl<const VarDecl *> &vars) {
+  if (const auto *ref = dyn_cast<DeclRefExpr>(e))
+    if (const auto *vd = dyn_cast<VarDecl>(ref->getDecl()))
+      vars.insert(vd);
+  for (const Stmt *child : e->children())
+    if (child)
+      collectReferencedVars(child, vars);
+}
 
 /// Check for unsupported implicit captures in a target region.
 static mlir::LogicalResult
@@ -846,6 +860,15 @@ emitOMPTargetImplicitCaptures(CIRGenFunction &cgf,
       // The variable is privatized by a firstprivate clause.
       if (llvm::is_contained(syms.priv, capture.getCapturedVar()) ||
           llvm::is_contained(syms.deviceAddr, capture.getCapturedVar()))
+        continue;
+      // A variable that the region doesn't use, as it would then be firstprivate
+      // or mapped, but that a map clause needs to evaluate, such as the length
+      // of an array section.
+      llvm::SmallPtrSet<const VarDecl *, 4> inMaps;
+      for (const auto *mc : s.getClausesOfKind<OMPMapClause>())
+        for (const Expr *e : mc->varlist())
+          collectReferencedVars(e, inMaps);
+      if (inMaps.contains(capture.getCapturedVar()))
         continue;
       cgf.getCIRGenModule().errorNYI(s.getBeginLoc(),
                                      "OpenMP target capture by copy");
@@ -916,7 +939,7 @@ emitTargetClauses(CIRGenFunction &cgf, CIRGenModule &cgm,
                   mlir::omp::TargetExtOperands &clauseOps, TargetSyms &syms) {
   mlir::LogicalResult res = mlir::success();
   OpenMPClauseEmitter ce(cgf, cgm, builder, loc, clauses);
-  ce.emitMap(clauseOps, &syms.map);
+  ce.emitMap(clauseOps, &syms.map, &syms.pointee);
   ce.emitIsDevicePtr(clauseOps, &syms.deviceAddr);
 
   // firstprivate(x): the target region gets a copy of x, initialized from the
@@ -1003,8 +1026,19 @@ emitTargetOp(CIRGenFunction &cgf, const DirectiveTy &s,
     for (const VarDecl *vd : vds) {
       Address origAddr = cgf.getAddrOfLocalVar(vd);
       savedAddrs.push_back({vd, origAddr});
-      cgf.replaceAddrOfLocalVar(
-          vd, Address(block.getArgument(argIdx++), origAddr.getAlignment()));
+      mlir::Value blockArg = block.getArgument(argIdx++);
+      if (syms.pointee.contains(vd)) {
+        // The argument is the pointer's value, which the region has to find
+        // in a variable.
+        mlir::Value var = builder.createAlloca(
+            begin, mlir::cast<cir::PointerType>(origAddr.getPointer().getType()),
+            vd->getName(), origAddr.getAlignment());
+        cir::StoreOp::create(builder, begin, blockArg, var);
+        cgf.replaceAddrOfLocalVar(vd, Address(var, origAddr.getAlignment()));
+        continue;
+      }
+      cgf.replaceAddrOfLocalVar(vd,
+                                Address(blockArg, origAddr.getAlignment()));
     }
   }
   // Private block arguments come after those of all the map operands, which

@@ -50,8 +50,12 @@ public:
 
   /// Emit map clauses. The optional \p mapSyms parameter collects the
   /// VarDecls corresponding to each map operand.
+  /// \p pointeeSyms collects those variables, pointers, of which what they
+  /// point to is mapped rather than they themselves.
   bool emitMap(mlir::omp::MapClauseOps &result,
-               llvm::SmallVectorImpl<const VarDecl *> *mapSyms = nullptr) const;
+               llvm::SmallVectorImpl<const VarDecl *> *mapSyms = nullptr,
+               llvm::SmallPtrSetImpl<const VarDecl *> *pointeeSyms =
+                   nullptr) const;
 
   /// Emit is_device_ptr clauses: the pointers are already device addresses, so
   /// they are passed to the region as they are. The optional \p syms collects
